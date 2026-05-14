@@ -51,7 +51,7 @@
   - _Boundary: TagExtractor_
   - _Requirements: 8_
 
-- [ ] 3.2 (P) Table of contents generation from heading structure
+- [x] 3.2 (P) Table of contents generation from heading structure
   - Parse document heading hierarchy (H1-H6) and generate a TOC with SiYuan-compatible block reference links
   - Handle empty documents and documents with no headings gracefully (produce empty TOC)
   - A document with three heading levels produces a three-level indented TOC with valid block reference links
