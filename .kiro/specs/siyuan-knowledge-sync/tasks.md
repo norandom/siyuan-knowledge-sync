@@ -117,7 +117,7 @@
   - _Requirements: 10_
 
 - [ ] 6. Integration and validation
-- [ ] 6.1 Application entry point and final wiring
+- [x] 6.1 Application entry point and final wiring
   - Create main.go with the root Cobra command and mcp-server subcommand
   - Wire Config loading into persistent flags/pre-run hooks
   - The binary supports all four commands (sync, download, audit, mcp-server) with config loaded from the working directory
