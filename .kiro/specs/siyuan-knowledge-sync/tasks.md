@@ -12,7 +12,7 @@
   - All public types compile and are importable by dependent packages
   - _Requirements: 1, 3_
 
-- [ ] 1.3 Load and validate the sync configuration file
+- [x] 1.3 Load and validate the sync configuration file
   - Parse `.siyuan-sync.yaml` with endpoint, token, repo_path, and autofix fields
   - Reject missing endpoint/token/repo_path with actionable error messages pointing to the config file
   - A valid config file in the working directory loads without errors and produces a validated Config struct
