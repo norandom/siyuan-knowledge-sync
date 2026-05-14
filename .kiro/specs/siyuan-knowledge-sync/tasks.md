@@ -78,7 +78,7 @@
   - _Depends: 2.1, 2.2, 2.3, 3.3_
   - _Requirements: 3, 4_
 
-- [ ] 4.2 Download sync from SiYuan to local files
+- [x] 4.2 Download sync from SiYuan to local files
   - Fetch all documents from configured SiYuan notebooks via export endpoint and write them as local `.md` files
   - Preserve SiYuan document hierarchy as local folder structure
   - Handle existing-file conflicts with configurable behavior: overwrite, skip, or merge

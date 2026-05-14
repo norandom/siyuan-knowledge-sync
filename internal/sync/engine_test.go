@@ -971,3 +971,925 @@ func TestNewSyncEngine(t *testing.T) {
 	_ = client
 	_ = scanner
 }
+
+type downloadTestDoc struct {
+	ID      string
+	HPath   string
+	Content string
+}
+
+type downloadTestNotebook struct {
+	ID   string
+	Name string
+	Docs []downloadTestDoc
+}
+
+func newDownloadMockServer(t *testing.T, notebooks []downloadTestNotebook) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		enc := json.NewEncoder(w)
+
+		var body map[string]any
+		if r.Body != nil {
+			json.NewDecoder(r.Body).Decode(&body)
+		}
+
+		switch r.URL.Path {
+		case "/api/notebook/lsNotebooks":
+			nbs := make([]types.Notebook, 0, len(notebooks))
+			for _, nb := range notebooks {
+				nbs = append(nbs, types.Notebook{ID: nb.ID, Name: nb.Name})
+			}
+			enc.Encode(map[string]any{
+				"code": 0, "msg": "",
+				"data": map[string]any{"notebooks": nbs},
+			})
+
+		case "/api/filetree/listDocsByPath":
+			notebookID, _ := body["notebook"].(string)
+			var tree []types.TreeNode
+			for _, nb := range notebooks {
+				if nb.ID != notebookID {
+					continue
+				}
+				for _, doc := range nb.Docs {
+					tree = append(tree, types.TreeNode{
+						ID:   doc.ID,
+						Name: doc.HPath,
+						Type: "d",
+					})
+				}
+			}
+			enc.Encode(map[string]any{
+				"code": 0, "msg": "",
+				"data": map[string]any{"tree": tree},
+			})
+
+		case "/api/export/exportMdContent":
+			id, _ := body["id"].(string)
+			for _, nb := range notebooks {
+				for _, doc := range nb.Docs {
+					if doc.ID == id {
+						enc.Encode(map[string]any{
+							"code": 0, "msg": "",
+							"data": types.ExportResult{
+								ID:      doc.ID,
+								Content: doc.Content,
+								HPath:   doc.HPath,
+							},
+						})
+						return
+					}
+				}
+			}
+			enc.Encode(map[string]any{"code": 1, "msg": "document not found"})
+
+		default:
+			enc.Encode(map[string]any{"code": 0, "msg": ""})
+		}
+	}))
+}
+
+func setupDownloadEngine(t *testing.T, server *httptest.Server, repoPath string) *SyncEngine {
+	t.Helper()
+	client := siyuan.NewClient(server.URL, "test-token")
+	scanner, err := git.NewGitScanner(repoPath)
+	if err != nil {
+		t.Fatalf("NewGitScanner: %v", err)
+	}
+	tracker, err := state.NewStateTracker(repoPath)
+	if err != nil {
+		t.Fatalf("NewStateTracker: %v", err)
+	}
+	ce := compliance.NewComplianceEngine(false)
+	return NewSyncEngine(client, scanner, tracker, ce)
+}
+
+func TestDownload_HierarchyPreserved(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	notebooks := []downloadTestNotebook{
+		{
+			ID: "nb-journal", Name: "journal",
+			Docs: []downloadTestDoc{
+				{ID: "doc-1", HPath: "/2024/01/entry.md", Content: "# January Entry\n\nSome content."},
+				{ID: "doc-2", HPath: "/2024/02/summary.md", Content: "# February Summary"},
+			},
+		},
+		{
+			ID: "nb-projects", Name: "projects",
+			Docs: []downloadTestDoc{
+				{ID: "doc-3", HPath: "/code/readme.md", Content: "# Code Readme"},
+			},
+		},
+	}
+
+	server := newDownloadMockServer(t, notebooks)
+	defer server.Close()
+
+	engine := setupDownloadEngine(t, server, dir)
+
+	report, err := engine.Download(context.Background(), "overwrite")
+	if err != nil {
+		t.Fatalf("Download failed: %v", err)
+	}
+
+	if len(report.Created) != 3 {
+		t.Fatalf("expected 3 created, got %d: %v", len(report.Created), report.Created)
+	}
+	if len(report.Updated) != 0 {
+		t.Errorf("expected 0 updated, got %d", len(report.Updated))
+	}
+	if len(report.Errors) != 0 {
+		t.Errorf("expected 0 errors, got %d: %v", len(report.Errors), report.Errors)
+	}
+
+	paths := map[string]bool{
+		filepath.Join("journal", "2024", "01", "entry.md"):   false,
+		filepath.Join("journal", "2024", "02", "summary.md"): false,
+		filepath.Join("projects", "code", "readme.md"):       false,
+	}
+
+	for _, p := range report.Created {
+		if _, ok := paths[p]; ok {
+			paths[p] = true
+		}
+	}
+
+	for p, found := range paths {
+		if !found {
+			t.Errorf("expected path %q in created", p)
+			continue
+		}
+		fullPath := filepath.Join(dir, p)
+		data, err := os.ReadFile(fullPath)
+		if err != nil {
+			t.Errorf("read %s: %v", p, err)
+			continue
+		}
+		if len(data) == 0 {
+			t.Errorf("empty file: %s", p)
+		}
+	}
+}
+
+func TestDownload_NotebookToFolderMapping(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	notebooks := []downloadTestNotebook{
+		{
+			ID: "nb-1", Name: "journal",
+			Docs: []downloadTestDoc{
+				{ID: "doc-1", HPath: "/note.md", Content: "# Journal Note"},
+			},
+		},
+	}
+
+	server := newDownloadMockServer(t, notebooks)
+	defer server.Close()
+
+	engine := setupDownloadEngine(t, server, dir)
+
+	report, err := engine.Download(context.Background(), "overwrite")
+	if err != nil {
+		t.Fatalf("Download failed: %v", err)
+	}
+
+	if len(report.Created) != 1 {
+		t.Fatalf("expected 1 created, got %d", len(report.Created))
+	}
+
+	expectedRel := filepath.Join("journal", "note.md")
+	if report.Created[0] != expectedRel {
+		t.Errorf("expected local path %q, got %q", expectedRel, report.Created[0])
+	}
+
+	fullPath := filepath.Join(dir, expectedRel)
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if string(data) != "# Journal Note" {
+		t.Errorf("expected '# Journal Note', got %q", string(data))
+	}
+}
+
+func TestDownload_ConflictSkip(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	existingPath := filepath.Join(dir, "journal", "note.md")
+	if err := os.MkdirAll(filepath.Dir(existingPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	existingContent := "# Original Local Content"
+	if err := os.WriteFile(existingPath, []byte(existingContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	notebooks := []downloadTestNotebook{
+		{
+			ID: "nb-1", Name: "journal",
+			Docs: []downloadTestDoc{
+				{ID: "doc-1", HPath: "/note.md", Content: "# New SiYuan Content"},
+			},
+		},
+	}
+
+	server := newDownloadMockServer(t, notebooks)
+	defer server.Close()
+
+	engine := setupDownloadEngine(t, server, dir)
+
+	report, err := engine.Download(context.Background(), "skip")
+	if err != nil {
+		t.Fatalf("Download failed: %v", err)
+	}
+
+	if len(report.Created) != 0 {
+		t.Errorf("expected 0 created, got %d: %v", len(report.Created), report.Created)
+	}
+	if len(report.Updated) != 0 {
+		t.Errorf("expected 0 updated, got %d: %v", len(report.Updated), report.Updated)
+	}
+
+	data, err := os.ReadFile(existingPath)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if string(data) != existingContent {
+		t.Errorf("file should be unchanged.\nwant: %q\ngot:  %q", existingContent, string(data))
+	}
+}
+
+func TestDownload_ConflictOverwrite(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	existingPath := filepath.Join(dir, "journal", "note.md")
+	if err := os.MkdirAll(filepath.Dir(existingPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(existingPath, []byte("# Old Content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	notebooks := []downloadTestNotebook{
+		{
+			ID: "nb-1", Name: "journal",
+			Docs: []downloadTestDoc{
+				{ID: "doc-1", HPath: "/note.md", Content: "# New SiYuan Content"},
+			},
+		},
+	}
+
+	server := newDownloadMockServer(t, notebooks)
+	defer server.Close()
+
+	engine := setupDownloadEngine(t, server, dir)
+
+	report, err := engine.Download(context.Background(), "overwrite")
+	if err != nil {
+		t.Fatalf("Download failed: %v", err)
+	}
+
+	if len(report.Created) != 0 {
+		t.Errorf("expected 0 created, got %d", len(report.Created))
+	}
+	if len(report.Updated) != 1 {
+		t.Fatalf("expected 1 updated, got %d", len(report.Updated))
+	}
+
+	data, err := os.ReadFile(existingPath)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if string(data) != "# New SiYuan Content" {
+		t.Errorf("expected '# New SiYuan Content', got %q", string(data))
+	}
+}
+
+func TestDownload_ConflictMerge(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	existingPath := filepath.Join(dir, "journal", "note.md")
+	if err := os.MkdirAll(filepath.Dir(existingPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(existingPath, []byte("# Local Content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	notebooks := []downloadTestNotebook{
+		{
+			ID: "nb-1", Name: "journal",
+			Docs: []downloadTestDoc{
+				{ID: "doc-1", HPath: "/note.md", Content: "# SiYuan Content"},
+			},
+		},
+	}
+
+	server := newDownloadMockServer(t, notebooks)
+	defer server.Close()
+
+	engine := setupDownloadEngine(t, server, dir)
+
+	report, err := engine.Download(context.Background(), "merge")
+	if err != nil {
+		t.Fatalf("Download failed: %v", err)
+	}
+
+	if len(report.Created) != 0 {
+		t.Errorf("expected 0 created, got %d", len(report.Created))
+	}
+	if len(report.Updated) != 1 {
+		t.Fatalf("expected 1 updated, got %d", len(report.Updated))
+	}
+
+	data, err := os.ReadFile(existingPath)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "<<<<<<< local") {
+		t.Error("expected merge conflict marker '<<<<<<< local'")
+	}
+	if !strings.Contains(content, "=======") {
+		t.Error("expected merge conflict marker '======='")
+	}
+	if !strings.Contains(content, ">>>>>>> siyuan") {
+		t.Error("expected merge conflict marker '>>>>>>> siyuan'")
+	}
+	if !strings.Contains(content, "# Local Content") {
+		t.Error("expected local content in merge output")
+	}
+	if !strings.Contains(content, "# SiYuan Content") {
+		t.Error("expected SiYuan content in merge output")
+	}
+}
+
+func TestDownload_StateTrackerUpdated(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	notebooks := []downloadTestNotebook{
+		{
+			ID: "nb-1", Name: "wiki",
+			Docs: []downloadTestDoc{
+				{ID: "doc-1", HPath: "/page.md", Content: "# Wiki Page"},
+			},
+		},
+	}
+
+	server := newDownloadMockServer(t, notebooks)
+	defer server.Close()
+
+	engine := setupDownloadEngine(t, server, dir)
+
+	_, err := engine.Download(context.Background(), "overwrite")
+	if err != nil {
+		t.Fatalf("Download failed: %v", err)
+	}
+
+	allState := engine.state.All()
+	localPath := filepath.Join("wiki", "page.md")
+	entry, ok := allState[localPath]
+	if !ok {
+		t.Fatalf("expected state entry for %q, got state: %v", localPath, allState)
+	}
+	if entry.SiYuanID != "doc-1" {
+		t.Errorf("expected SiYuanID 'doc-1', got %q", entry.SiYuanID)
+	}
+	if entry.NotebookID != "nb-1" {
+		t.Errorf("expected NotebookID 'nb-1', got %q", entry.NotebookID)
+	}
+	if entry.SyncedAt.IsZero() {
+		t.Error("expected non-zero SyncedAt")
+	}
+
+	tracker, err := state.NewStateTracker(dir)
+	if err != nil {
+		t.Fatalf("reload state: %v", err)
+	}
+	reloaded, ok := tracker.Get(localPath)
+	if !ok {
+		t.Fatalf("expected persisted entry for %q", localPath)
+	}
+	if reloaded.SiYuanID != "doc-1" {
+		t.Errorf("persisted SiYuanID mismatch: %q", reloaded.SiYuanID)
+	}
+}
+
+func TestDownload_EmptyNotebook(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	notebooks := []downloadTestNotebook{
+		{
+			ID: "nb-empty", Name: "empty_nb",
+			Docs: nil,
+		},
+	}
+
+	server := newDownloadMockServer(t, notebooks)
+	defer server.Close()
+
+	engine := setupDownloadEngine(t, server, dir)
+
+	report, err := engine.Download(context.Background(), "overwrite")
+	if err != nil {
+		t.Fatalf("Download failed: %v", err)
+	}
+
+	if len(report.Created) != 0 {
+		t.Errorf("expected 0 created, got %d", len(report.Created))
+	}
+	if len(report.Updated) != 0 {
+		t.Errorf("expected 0 updated, got %d", len(report.Updated))
+	}
+	if len(report.Errors) != 0 {
+		t.Errorf("expected 0 errors, got %d", len(report.Errors))
+	}
+}
+
+func TestDownload_ExportErrorPerDocument(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		enc := json.NewEncoder(w)
+
+		var body map[string]any
+		if r.Body != nil {
+			json.NewDecoder(r.Body).Decode(&body)
+		}
+
+		switch r.URL.Path {
+		case "/api/notebook/lsNotebooks":
+			enc.Encode(map[string]any{
+				"code": 0, "msg": "",
+				"data": map[string]any{
+					"notebooks": []types.Notebook{{ID: "nb-1", Name: "wiki"}},
+				},
+			})
+		case "/api/filetree/listDocsByPath":
+			enc.Encode(map[string]any{
+				"code": 0, "msg": "",
+				"data": map[string]any{
+					"tree": []types.TreeNode{
+						{ID: "doc-good", Name: "good.md", Type: "d"},
+						{ID: "doc-bad", Name: "bad.md", Type: "d"},
+						{ID: "doc-also-good", Name: "also_good.md", Type: "d"},
+					},
+				},
+			})
+		case "/api/export/exportMdContent":
+			id, _ := body["id"].(string)
+			switch id {
+			case "doc-good":
+				enc.Encode(map[string]any{
+					"code": 0, "msg": "",
+					"data": types.ExportResult{ID: "doc-good", Content: "# Good", HPath: "/good.md"},
+				})
+			case "doc-bad":
+				enc.Encode(map[string]any{"code": 500, "msg": "internal error"})
+			case "doc-also-good":
+				enc.Encode(map[string]any{
+					"code": 0, "msg": "",
+					"data": types.ExportResult{ID: "doc-also-good", Content: "# Also Good", HPath: "/also_good.md"},
+				})
+			default:
+				enc.Encode(map[string]any{"code": 1, "msg": "unknown"})
+			}
+		default:
+			enc.Encode(map[string]any{"code": 0, "msg": ""})
+		}
+	}))
+	defer server.Close()
+
+	engine := setupDownloadEngine(t, server, dir)
+
+	report, err := engine.Download(context.Background(), "overwrite")
+	if err != nil {
+		t.Fatalf("Download failed: %v", err)
+	}
+
+	if len(report.Created) != 2 {
+		t.Errorf("expected 2 created, got %d (errors: %v)", len(report.Created), report.Errors)
+	}
+	if len(report.Errors) != 1 {
+		t.Errorf("expected 1 error, got %d", len(report.Errors))
+	}
+}
+
+func TestDownload_ContentMatchesSiYuanExport(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	content := "# Hello\n\nWorld\n\n```go\nfmt.Println(\"hi\")\n```\n"
+
+	notebooks := []downloadTestNotebook{
+		{
+			ID: "nb-1", Name: "notes",
+			Docs: []downloadTestDoc{
+				{ID: "doc-1", HPath: "/code.md", Content: content},
+			},
+		},
+	}
+
+	server := newDownloadMockServer(t, notebooks)
+	defer server.Close()
+
+	engine := setupDownloadEngine(t, server, dir)
+
+	_, err := engine.Download(context.Background(), "overwrite")
+	if err != nil {
+		t.Fatalf("Download failed: %v", err)
+	}
+
+	localPath := filepath.Join(dir, "notes", "code.md")
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+
+	if string(data) != content {
+		t.Errorf("content mismatch.\nwant: %q\ngot:  %q", content, string(data))
+	}
+}
+
+func TestDownload_TreeWalkError(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		enc := json.NewEncoder(w)
+
+		switch r.URL.Path {
+		case "/api/notebook/lsNotebooks":
+			enc.Encode(map[string]any{
+				"code": 0, "msg": "",
+				"data": map[string]any{
+					"notebooks": []types.Notebook{
+						{ID: "nb-good", Name: "good"},
+						{ID: "nb-bad", Name: "bad"},
+					},
+				},
+			})
+		case "/api/filetree/listDocsByPath":
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			nbID, _ := body["notebook"].(string)
+			if nbID == "nb-good" {
+				enc.Encode(map[string]any{
+					"code": 0, "msg": "",
+					"data": map[string]any{
+						"tree": []types.TreeNode{
+							{ID: "doc-1", Name: "a.md", Type: "d"},
+						},
+					},
+				})
+			} else {
+				enc.Encode(map[string]any{"code": 1, "msg": "notebook not found"})
+			}
+		case "/api/export/exportMdContent":
+			enc.Encode(map[string]any{
+				"code": 0, "msg": "",
+				"data": types.ExportResult{ID: "doc-1", Content: "# A", HPath: "/a.md"},
+			})
+		default:
+			enc.Encode(map[string]any{"code": 0, "msg": ""})
+		}
+	}))
+	defer server.Close()
+
+	engine := setupDownloadEngine(t, server, dir)
+
+	report, err := engine.Download(context.Background(), "overwrite")
+	if err != nil {
+		t.Fatalf("Download failed: %v", err)
+	}
+
+	if len(report.Created) != 1 {
+		t.Errorf("expected 1 created from good notebook, got %d", len(report.Created))
+	}
+	if len(report.Errors) != 1 {
+		t.Fatalf("expected 1 error from bad notebook, got %d (errors: %v)", len(report.Errors), report.Errors)
+	}
+	if !strings.Contains(report.Errors[0].Message, "list doc tree") {
+		t.Errorf("expected 'list doc tree' error, got %q", report.Errors[0].Message)
+	}
+	if report.Errors[0].File != "bad" {
+		t.Errorf("expected error File 'bad', got %q", report.Errors[0].File)
+	}
+}
+
+func TestCollectDocIDs(t *testing.T) {
+	tree := []types.TreeNode{
+		{ID: "1", Name: "doc1", Type: "d"},
+		{
+			ID: "2", Name: "folder", Type: "",
+			Children: []types.TreeNode{
+				{ID: "3", Name: "doc2", Type: "d"},
+				{ID: "4", Name: "doc3", Type: "d"},
+			},
+		},
+		{
+			ID: "5", Name: "nested", Type: "",
+			Children: []types.TreeNode{
+				{
+					ID: "6", Name: "sub", Type: "",
+					Children: []types.TreeNode{
+						{ID: "7", Name: "deep", Type: "d"},
+					},
+				},
+				{ID: "8", Name: "doc4", Type: "d"},
+			},
+		},
+	}
+
+	ids := collectDocIDs(tree)
+	expected := map[string]bool{"1": false, "3": false, "4": false, "7": false, "8": false}
+
+	if len(ids) != len(expected) {
+		t.Fatalf("expected %d doc IDs, got %d: %v", len(expected), len(ids), ids)
+	}
+
+	for _, id := range ids {
+		if _, ok := expected[id]; ok {
+			expected[id] = true
+		} else {
+			t.Errorf("unexpected ID %q", id)
+		}
+	}
+
+	for id, found := range expected {
+		if !found {
+			t.Errorf("expected ID %q not found", id)
+		}
+	}
+}
+
+func TestLocalPathFromSiYuan(t *testing.T) {
+	cases := []struct {
+		notebook string
+		hpath    string
+		want     string
+	}{
+		{"journal", "/2024/01/entry.md", "journal/2024/01/entry.md"},
+		{"projects", "/code/readme.md", "projects/code/readme.md"},
+		{"wiki", "/page.md", "wiki/page.md"},
+		{"notes", "/sub/deep/file.md", "notes/sub/deep/file.md"},
+		{"root", "/readme.md", "root/readme.md"},
+	}
+	for _, c := range cases {
+		got := localPathFromSiYuan(c.notebook, c.hpath)
+		if got != c.want {
+			t.Errorf("localPathFromSiYuan(%q, %q) = %q, want %q", c.notebook, c.hpath, got, c.want)
+		}
+	}
+}
+
+func TestMergeContent(t *testing.T) {
+	got := mergeContent("# Local", "# SiYuan")
+	if !strings.Contains(got, "<<<<<<< local") {
+		t.Error("missing '<<<<<<< local' marker")
+	}
+	if !strings.Contains(got, "=======") {
+		t.Error("missing '=======' separator")
+	}
+	if !strings.Contains(got, ">>>>>>> siyuan") {
+		t.Error("missing '>>>>>>> siyuan' marker")
+	}
+	if !strings.Contains(got, "# Local") {
+		t.Error("missing local content")
+	}
+	if !strings.Contains(got, "# SiYuan") {
+		t.Error("missing SiYuan content")
+	}
+}
+
+func TestDownload_NestedDocTree(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		enc := json.NewEncoder(w)
+
+		var body map[string]any
+		if r.Body != nil {
+			json.NewDecoder(r.Body).Decode(&body)
+		}
+
+		switch r.URL.Path {
+		case "/api/notebook/lsNotebooks":
+			enc.Encode(map[string]any{
+				"code": 0, "msg": "",
+				"data": map[string]any{
+					"notebooks": []types.Notebook{{ID: "nb-1", Name: "wiki"}},
+				},
+			})
+		case "/api/filetree/listDocsByPath":
+			enc.Encode(map[string]any{
+				"code": 0, "msg": "",
+				"data": map[string]any{
+					"tree": []types.TreeNode{
+						{
+							ID: "folder-1", Name: "sub", Type: "",
+							Children: []types.TreeNode{
+								{ID: "doc-1", Name: "nested.md", Type: "d"},
+							},
+						},
+						{ID: "doc-2", Name: "root.md", Type: "d"},
+					},
+				},
+			})
+		case "/api/export/exportMdContent":
+			id, _ := body["id"].(string)
+			switch id {
+			case "doc-1":
+				enc.Encode(map[string]any{
+					"code": 0, "msg": "",
+					"data": types.ExportResult{ID: "doc-1", Content: "# Nested", HPath: "/sub/nested.md"},
+				})
+			case "doc-2":
+				enc.Encode(map[string]any{
+					"code": 0, "msg": "",
+					"data": types.ExportResult{ID: "doc-2", Content: "# Root", HPath: "/root.md"},
+				})
+			default:
+				enc.Encode(map[string]any{"code": 1, "msg": "unknown"})
+			}
+		default:
+			enc.Encode(map[string]any{"code": 0, "msg": ""})
+		}
+	}))
+	defer server.Close()
+
+	engine := setupDownloadEngine(t, server, dir)
+
+	report, err := engine.Download(context.Background(), "overwrite")
+	if err != nil {
+		t.Fatalf("Download failed: %v", err)
+	}
+
+	if len(report.Created) != 2 {
+		t.Fatalf("expected 2 created, got %d: %v (errors: %v)", len(report.Created), report.Created, report.Errors)
+	}
+
+	for _, p := range report.Created {
+		fullPath := filepath.Join(dir, p)
+		if _, err := os.Stat(fullPath); err != nil {
+			t.Errorf("file %s does not exist: %v", p, err)
+		}
+	}
+}
+
+func TestDownload_MultipleNotebooks(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	notebooks := []downloadTestNotebook{
+		{
+			ID: "nb-a", Name: "alpha",
+			Docs: []downloadTestDoc{
+				{ID: "a1", HPath: "/one.md", Content: "# Alpha One"},
+				{ID: "a2", HPath: "/two.md", Content: "# Alpha Two"},
+			},
+		},
+		{
+			ID: "nb-b", Name: "beta",
+			Docs: []downloadTestDoc{
+				{ID: "b1", HPath: "/x.md", Content: "# Beta X"},
+			},
+		},
+	}
+
+	server := newDownloadMockServer(t, notebooks)
+	defer server.Close()
+
+	engine := setupDownloadEngine(t, server, dir)
+
+	report, err := engine.Download(context.Background(), "overwrite")
+	if err != nil {
+		t.Fatalf("Download failed: %v", err)
+	}
+
+	if len(report.Created) != 3 {
+		t.Fatalf("expected 3 created, got %d: %v", len(report.Created), report.Created)
+	}
+
+	hasAlpha := false
+	hasBeta := false
+	for _, p := range report.Created {
+		top := topLevelFolder(p)
+		switch top {
+		case "alpha":
+			hasAlpha = true
+		case "beta":
+			hasBeta = true
+		}
+	}
+	if !hasAlpha {
+		t.Error("expected files in 'alpha' notebook")
+	}
+	if !hasBeta {
+		t.Error("expected files in 'beta' notebook")
+	}
+}
+
+func TestDownload_WriteError(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	lockedDir := filepath.Join(dir, "wiki")
+	if err := os.MkdirAll(lockedDir, 0000); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(lockedDir, 0755)
+
+	notebooks := []downloadTestNotebook{
+		{
+			ID: "nb-1", Name: "wiki",
+			Docs: []downloadTestDoc{
+				{ID: "doc-1", HPath: "/page.md", Content: "# Content"},
+			},
+		},
+	}
+
+	server := newDownloadMockServer(t, notebooks)
+	defer server.Close()
+
+	engine := setupDownloadEngine(t, server, dir)
+
+	report, err := engine.Download(context.Background(), "overwrite")
+	if err != nil {
+		t.Fatalf("Download failed: %v", err)
+	}
+
+	if len(report.Errors) != 1 {
+		t.Fatalf("expected 1 error, got %d (created=%v, errors=%v)", len(report.Errors), report.Created, report.Errors)
+	}
+	msg := report.Errors[0].Message
+	if !strings.Contains(msg, "create dir") && !strings.Contains(msg, "write:") {
+		t.Errorf("expected file-system error, got %q", msg)
+	}
+}
+
+func TestDownload_InvalidConflictMode(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	notebooks := []downloadTestNotebook{
+		{
+			ID: "nb-1", Name: "wiki",
+			Docs: []downloadTestDoc{
+				{ID: "doc-1", HPath: "/page.md", Content: "# Content"},
+			},
+		},
+	}
+
+	server := newDownloadMockServer(t, notebooks)
+	defer server.Close()
+
+	engine := setupDownloadEngine(t, server, dir)
+
+	_, err := engine.Download(context.Background(), "banana")
+	if err == nil {
+		t.Fatal("expected error for invalid conflict mode")
+	}
+	if !strings.Contains(err.Error(), "invalid conflict mode") {
+		t.Errorf("expected 'invalid conflict mode' in error, got %q", err.Error())
+	}
+}
+
+func TestDownload_ListNotebooksError(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		enc := json.NewEncoder(w)
+		enc.Encode(map[string]any{
+			"code": 500, "msg": "internal server error",
+		})
+	}))
+	defer server.Close()
+
+	engine := setupDownloadEngine(t, server, dir)
+
+	_, err := engine.Download(context.Background(), "overwrite")
+	if err == nil {
+		t.Fatal("expected error listing notebooks")
+	}
+	if !strings.Contains(err.Error(), "list notebooks") {
+		t.Errorf("expected 'list notebooks' in error, got %q", err.Error())
+	}
+}

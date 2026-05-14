@@ -168,3 +168,123 @@ func buildHPath(filePath string) string {
 	rest := strings.TrimPrefix(clean, top+"/")
 	return "/" + rest
 }
+
+func (e *SyncEngine) Download(ctx context.Context, conflictMode string) (*types.SyncReport, error) {
+	validModes := map[string]bool{"skip": true, "overwrite": true, "merge": true}
+	if !validModes[conflictMode] {
+		return nil, fmt.Errorf("invalid conflict mode %q: must be skip, overwrite, or merge", conflictMode)
+	}
+
+	report := &types.SyncReport{}
+
+	notebooks, err := e.client.ListNotebooks(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list notebooks: %w", err)
+	}
+
+	for _, nb := range notebooks {
+		e.downloadNotebook(ctx, nb, conflictMode, report)
+	}
+
+	if err := e.state.Save(); err != nil {
+		return report, fmt.Errorf("save state: %w", err)
+	}
+
+	return report, nil
+}
+
+func (e *SyncEngine) downloadNotebook(ctx context.Context, nb types.Notebook, conflictMode string, report *types.SyncReport) {
+	tree, err := e.client.ListDocTree(ctx, nb.ID, "/")
+	if err != nil {
+		report.Errors = append(report.Errors, types.SyncError{
+			File:    nb.Name,
+			Message: fmt.Sprintf("list doc tree: %v", err),
+		})
+		return
+	}
+
+	docIDs := collectDocIDs(tree)
+
+	for _, docID := range docIDs {
+		exportResult, err := e.client.ExportMdContent(ctx, docID)
+		if err != nil {
+			report.Errors = append(report.Errors, types.SyncError{
+				File:    nb.Name + "/" + docID,
+				Message: fmt.Sprintf("export: %v", err),
+			})
+			continue
+		}
+
+		localPath := localPathFromSiYuan(nb.Name, exportResult.HPath)
+		fullPath := filepath.Join(e.repoPath, localPath)
+
+		_, statErr := os.Stat(fullPath)
+		fileExists := statErr == nil
+
+		if fileExists && conflictMode == "skip" {
+			continue
+		}
+
+		content := exportResult.Content
+		if fileExists && conflictMode == "merge" {
+			existing, err := os.ReadFile(fullPath)
+			if err != nil {
+				report.Errors = append(report.Errors, types.SyncError{
+					File:    localPath,
+					Message: fmt.Sprintf("read existing: %v", err),
+				})
+				continue
+			}
+			content = mergeContent(string(existing), content)
+		}
+
+		dir := filepath.Dir(fullPath)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			report.Errors = append(report.Errors, types.SyncError{
+				File:    localPath,
+				Message: fmt.Sprintf("create dir: %v", err),
+			})
+			continue
+		}
+
+		if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
+			report.Errors = append(report.Errors, types.SyncError{
+				File:    localPath,
+				Message: fmt.Sprintf("write: %v", err),
+			})
+			continue
+		}
+
+		if fileExists {
+			report.Updated = append(report.Updated, localPath)
+		} else {
+			report.Created = append(report.Created, localPath)
+		}
+
+		e.state.Put(types.SyncEntry{
+			LocalPath:  localPath,
+			SiYuanID:   exportResult.ID,
+			NotebookID: nb.ID,
+		})
+	}
+}
+
+func collectDocIDs(nodes []types.TreeNode) []string {
+	var ids []string
+	for _, n := range nodes {
+		if n.Type == "d" {
+			ids = append(ids, n.ID)
+		}
+		ids = append(ids, collectDocIDs(n.Children)...)
+	}
+	return ids
+}
+
+func localPathFromSiYuan(notebookName, hpath string) string {
+	clean := strings.TrimPrefix(hpath, "/")
+	return filepath.Join(notebookName, clean)
+}
+
+func mergeContent(existing, incoming string) string {
+	return "<<<<<<< local\n" + existing + "\n=======\n" + incoming + "\n>>>>>>> siyuan\n"
+}
