@@ -69,7 +69,7 @@
   - _Requirements: 7, 8, 9_
 
 - [ ] 4. Sync operations
-- [ ] 4.1 Sync engine orchestration and upload workflow
+- [x] 4.1 Sync engine orchestration and upload workflow
   - Compute the diff between local tracked files, state tracker entries, and SiYuan document state to identify new, modified, and deleted documents
   - For new and modified files: run compliance audit (with autofix when configured), then push markdown content to SiYuan via create-or-update, mapping top-level folders to notebooks and subfolders to document hierarchy
   - Report created, updated, and errored documents after the sync run

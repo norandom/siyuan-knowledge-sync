@@ -59,6 +59,10 @@ func (s *GitScanner) ListTrackedMdFiles() ([]types.TrackedFile, error) {
 	return files, nil
 }
 
+func (s *GitScanner) RepoPath() string {
+	return s.repoPath
+}
+
 func (s *GitScanner) IsTracked(path string) (bool, error) {
 	if !strings.HasSuffix(path, ".md") {
 		return false, nil
