@@ -28,7 +28,7 @@
   - _Boundary: SiYuanClient_
   - _Requirements: 1, 3, 4, 5, 6, 10_
 
-- [ ] 2.2 (P) Git-tracked markdown file scanner
+- [x] 2.2 (P) Git-tracked markdown file scanner
   - Discover all git-tracked `.md` files in the configured repository using go-git
   - Return file paths with modification timestamps; exclude untracked, ignored, and non-markdown files
   - Querying a test git repository returns only committed `.md` files with their correct mod times
