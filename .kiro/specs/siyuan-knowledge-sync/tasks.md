@@ -35,7 +35,7 @@
   - _Boundary: GitScanner_
   - _Requirements: 2_
 
-- [ ] 2.3 (P) Sync state tracker with persistent JSON storage
+- [x] 2.3 (P) Sync state tracker with persistent JSON storage
   - Maintain local-path-to-SiYuan-ID mapping in memory, keyed by local path
   - Persist to `.siyuan-sync-state.json` and reload on startup; handle missing/corrupt state files gracefully
   - Support lookup by local path and by SiYuan ID, plus add/update/remove operations
