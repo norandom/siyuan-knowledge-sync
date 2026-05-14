@@ -107,7 +107,7 @@
   - _Depends: 1.3, 3.3, 4.1, 4.2, 4.3_
   - _Requirements: 4, 5, 7_
 
-- [ ] 5.2 MCP server exposing search, retrieval, and listing tools
+- [x] 5.2 MCP server exposing search, retrieval, and listing tools
   - Register three MCP tools via the official Go SDK: search (keyword/SQL query to matching document IDs with excerpts), retrieve (document ID to full markdown content), list_notebooks (to notebook names with document counts)
   - Use stdio transport for local agent access
   - Return structured JSON responses and handle SiYuan API errors gracefully (server stays alive on tool errors)
