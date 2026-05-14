@@ -44,7 +44,7 @@
   - _Requirements: 6_
 
 - [ ] 3. Content processing
-- [ ] 3.1 (P) Tag extraction from markdown frontmatter and inline syntax
+- [x] 3.1 (P) Tag extraction from markdown frontmatter and inline syntax
   - Extract tags from YAML frontmatter (tags field) and inline markdown tag patterns
   - Format extracted tags as SiYuan block attributes using the `custom-` prefix requirement
   - Given a markdown file with YAML frontmatter tags, produces the expected `custom-tag` key-value pairs
