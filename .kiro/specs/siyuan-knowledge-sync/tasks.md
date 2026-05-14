@@ -20,7 +20,7 @@
   - _Requirements: 1_
 
 - [ ] 2. Core integration services
-- [ ] 2.1 (P) SiYuan HTTP client with full API coverage
+- [x] 2.1 (P) SiYuan HTTP client with full API coverage
   - Implement all required API methods: notebooks (list, create, remove), documents (create with markdown, remove by ID, rename, list tree, get IDs by hpath), blocks (update, delete), export markdown content, block attributes (set, get), SQL query
   - Handle the code/msg/data API envelope: map code=0 to success, non-zero codes to descriptive Go errors
   - Include request timeout and auth header injection
