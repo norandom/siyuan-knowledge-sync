@@ -7,7 +7,7 @@
   - `go build ./...` completes with zero errors and all dependencies resolve
   - _Requirements: 1_
 
-- [ ] 1.2 Define shared domain types used across components
+- [x] 1.2 Define shared domain types used across components
   - Document metadata, notebook, sync entry/state, compliance issue, and API envelope types
   - All public types compile and are importable by dependent packages
   - _Requirements: 1, 3_
