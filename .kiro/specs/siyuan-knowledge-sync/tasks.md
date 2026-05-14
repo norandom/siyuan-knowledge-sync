@@ -58,7 +58,7 @@
   - _Boundary: TOCGenerator_
   - _Requirements: 9_
 
-- [ ] 3.3 Compliance audit and auto-fix engine
+- [x] 3.3 Compliance audit and auto-fix engine
   - Check markdown files for SiYuan formatting issues: block ID validity, heading nesting rules, attribute syntax, asset reference format
   - Report issues grouped by file with severity (error/warning) and fixability flag
   - Apply auto-fix rules when enabled, modifying only the content with detected issues
