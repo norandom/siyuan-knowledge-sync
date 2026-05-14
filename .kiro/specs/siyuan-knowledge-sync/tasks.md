@@ -98,7 +98,7 @@
   - _Requirements: 6_
 
 - [ ] 5. Application interfaces
-- [ ] 5.1 CLI command structure
+- [x] 5.1 CLI command structure
   - Implement Cobra commands: sync (with `--dry-run` flag), download (with `--conflict overwrite/skip/merge` flag), audit (with `--autofix` flag)
   - Wire command handlers to Config, SyncEngine, and ComplianceEngine
   - Display structured sync/audit reports with file counts and per-document details to stderr
