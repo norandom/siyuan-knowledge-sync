@@ -174,7 +174,7 @@
   - _Boundary: SiYuanClient_
   - _Depends: 7.2_
 
-- [ ] 7.5 Frontmatter-aware upload in the sync engine
+- [x] 7.5 Frontmatter-aware upload in the sync engine
   - On upload, send the frontmatter-stripped body to SiYuan instead of the raw content
   - After the document exists, set its title from the frontmatter title, falling back to the file name without its extension; apply the extracted tags as block attributes using the existing attribute operation
   - On frontmatter parse failure, record a compliance issue and upload the body without title or tag mapping; title and attribute API failures are recorded per file but do not change the created/updated outcome
@@ -200,4 +200,5 @@
 
 ## Implementation Notes
 - 7.2: `siyuan.Client.doRequest` now classifies non-JSON / Cloudflare Access responses before envelope decode and returns `*CloudflareAccessError` or a clearer generic error. All client methods (incl. the new `RenameDocByID` in 7.4 and the upload calls in 7.5) inherit this centrally — no per-method CF/non-JSON handling needed. CF challenge detection walks the redirect chain via `r.Request.Response` (Go's client follows redirects by default).
-- 7.3: `tags.Extract` and the new `tags.ExtractMeta` now share a single `extract` core (drift-proof). For 7.5, call `ExtractMeta` once and use `Meta.Body` (frontmatter-stripped) for create/update, `Meta.Title` (""=absent → filename-without-ext fallback in the engine), `Meta.Attrs` for `SetBlockAttrs`. Malformed frontmatter → `(Meta{}, err)`; engine must treat that as the 13.5 compliance-issue degradation path.
+- 7.3: `tags.Extract` and the new `tags.ExtractMeta` now share a single `extract` core (drift-proof). For 7.5, call `ExtractMeta` once and use `Meta.Body` (frontmatter-stripped) for create/update, `Meta.Title`, `Meta.Attrs` for `SetBlockAttrs`. Malformed frontmatter → `(Meta{}, err)`; engine treats that as the 13.5 compliance-issue degradation path.
+- 7.5: `siyuan.RenameDocByID` MUTATES the SiYuan document hpath. Therefore the engine calls it ONLY when `meta.Title != ""` (real frontmatter title); a no-frontmatter file gets NO rename (SiYuan's create-path-derived name satisfies 13.3). The original design Step 4 (unconditional rename with filename fallback) was a defect that regressed `e2e/TestFullSyncE2E`; design Addendum A Step 4 was amended. Unit mocks cannot model the hpath side effect — `e2e/TestFullSyncE2E` (no-frontmatter notes, hpath lookup) is the real guard; for 7.7 keep the unit-level `TestSync_NoFrontmatterTitle_DoesNotRename` regression guard.

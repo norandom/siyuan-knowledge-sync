@@ -68,6 +68,10 @@ type mockSiYuanHandler struct {
 	updatedDocs   []string
 	createdNBs    []string
 	removedDocIDs []string
+	renamedTitles map[string]string
+	setAttrs      map[string]map[string]string
+	renameErr     bool
+	setAttrsErr   bool
 }
 
 type mockDocRecord struct {
@@ -87,9 +91,11 @@ type createdDocRecord struct {
 func newMockSiYuanServer(t *testing.T) (*mockSiYuanHandler, *httptest.Server) {
 	t.Helper()
 	h := &mockSiYuanHandler{
-		t:         t,
-		notebooks: make(map[string]string),
-		docs:      make(map[string]mockDocRecord),
+		t:             t,
+		notebooks:     make(map[string]string),
+		docs:          make(map[string]mockDocRecord),
+		renamedTitles: make(map[string]string),
+		setAttrs:      make(map[string]map[string]string),
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -177,6 +183,32 @@ func newMockSiYuanServer(t *testing.T) (*mockSiYuanHandler, *httptest.Server) {
 			id, _ := body["id"].(string)
 			delete(h.docs, id)
 			h.removedDocIDs = append(h.removedDocIDs, id)
+			enc.Encode(map[string]any{"code": 0, "msg": ""})
+
+		case "/api/filetree/renameDocByID":
+			id, _ := body["id"].(string)
+			title, _ := body["title"].(string)
+			if h.renameErr {
+				enc.Encode(map[string]any{"code": 1, "msg": "rename failed"})
+				return
+			}
+			h.renamedTitles[id] = title
+			enc.Encode(map[string]any{"code": 0, "msg": ""})
+
+		case "/api/attr/setBlockAttrs":
+			id, _ := body["id"].(string)
+			if h.setAttrsErr {
+				enc.Encode(map[string]any{"code": 1, "msg": "setBlockAttrs failed"})
+				return
+			}
+			attrs := make(map[string]string)
+			if raw, ok := body["attrs"].(map[string]any); ok {
+				for k, v := range raw {
+					sv, _ := v.(string)
+					attrs[k] = sv
+				}
+			}
+			h.setAttrs[id] = attrs
 			enc.Encode(map[string]any{"code": 0, "msg": ""})
 
 		default:
@@ -2360,5 +2392,253 @@ func TestPrune_NoDeletedFiles_EmptyReport(t *testing.T) {
 	}
 	if len(h.removedDocIDs) != 0 {
 		t.Errorf("expected 0 RemoveDocByID calls, got %d", len(h.removedDocIDs))
+	}
+}
+
+// --- Task 7.5: Frontmatter-aware upload (Requirement 13) ---
+
+// 13.1, 13.2, 13.4: a note WITH frontmatter (title + tags) syncs so that the
+// created SiYuan body has no YAML frontmatter, renameDocByID is called with
+// the frontmatter title, and setBlockAttrs is called with the custom- map.
+func TestSync_FrontmatterStrippedTitleAndTagsApplied(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	content := "---\ntitle: My Real Title\ntags: [alpha, beta]\n---\n# Heading\n\nBody text\n"
+	writeGitFile(t, dir, "notebook/sub/file.md", content)
+	gitCmd(t, dir, "add", "notebook/sub/file.md")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	h, server := newMockSiYuanServer(t)
+	defer server.Close()
+
+	engine, _ := newSyncEngine(t, server, dir, false)
+
+	report, err := engine.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("Sync failed: %v", err)
+	}
+
+	if len(report.Created) != 1 || report.Created[0] != "notebook/sub/file.md" {
+		t.Fatalf("expected 1 created notebook/sub/file.md, got %v", report.Created)
+	}
+	if len(report.Errors) != 0 {
+		t.Fatalf("expected 0 errors, got %v", report.Errors)
+	}
+	if len(h.createdDocs) != 1 {
+		t.Fatalf("expected 1 created doc, got %d", len(h.createdDocs))
+	}
+	doc := h.createdDocs[0]
+
+	// 13.1: frontmatter block must NOT be in the uploaded body.
+	if strings.Contains(doc.Markdown, "---") {
+		t.Errorf("13.1: uploaded body still contains '---' frontmatter delimiter: %q", doc.Markdown)
+	}
+	if strings.Contains(doc.Markdown, "title: My Real Title") {
+		t.Errorf("13.1: uploaded body still contains frontmatter title key: %q", doc.Markdown)
+	}
+	if !strings.Contains(doc.Markdown, "# Heading") || !strings.Contains(doc.Markdown, "Body text") {
+		t.Errorf("13.1: uploaded body missing actual content: %q", doc.Markdown)
+	}
+
+	// 13.2: doc title set from frontmatter title.
+	if got := h.renamedTitles[doc.ID]; got != "My Real Title" {
+		t.Errorf("13.2: expected renameDocByID title %q, got %q (all=%v)", "My Real Title", got, h.renamedTitles)
+	}
+
+	// 13.4: tags applied as custom- block attributes.
+	attrs := h.setAttrs[doc.ID]
+	if attrs == nil {
+		t.Fatalf("13.4: expected setBlockAttrs called for doc %s, got %v", doc.ID, h.setAttrs)
+	}
+	if _, ok := attrs["custom-alpha"]; !ok {
+		t.Errorf("13.4: expected custom-alpha attr, got %v", attrs)
+	}
+	if _, ok := attrs["custom-beta"]; !ok {
+		t.Errorf("13.4: expected custom-beta attr, got %v", attrs)
+	}
+}
+
+// 13.3 (hpath-preservation regression guard): a note with NO frontmatter title
+// must NOT trigger renameDocByID. renameDocByID mutates the SiYuan document's
+// hpath; issuing a redundant filename->filename rename on the common
+// no-frontmatter path changes /name.md and breaks hpath-based resolution
+// (this is the regression that turned e2e/TestFullSyncE2E red). The document
+// keeps the name SiYuan derives from the create path, which satisfies 13.3
+// without an extra call. This unit test is the guard that would have caught
+// the e2e regression.
+func TestSync_NoFrontmatterTitle_DoesNotRename(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	// No frontmatter at all — the common case exercised by the e2e suite.
+	content := "# Content\n\nplain note, no frontmatter\n"
+	writeGitFile(t, dir, "notebook/sub/My Doc.md", content)
+	gitCmd(t, dir, "add", "notebook/sub/My Doc.md")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	h, server := newMockSiYuanServer(t)
+	defer server.Close()
+
+	engine, _ := newSyncEngine(t, server, dir, false)
+
+	report, err := engine.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("Sync failed: %v", err)
+	}
+	if len(report.Created) != 1 || report.Created[0] != "notebook/sub/My Doc.md" {
+		t.Fatalf("expected 1 created notebook/sub/My Doc.md, got %v (errors=%v)", report.Created, report.Errors)
+	}
+	if len(h.createdDocs) != 1 {
+		t.Fatalf("expected 1 created doc, got %d", len(h.createdDocs))
+	}
+	doc := h.createdDocs[0]
+
+	// The hpath-preservation invariant: NO renameDocByID call for this doc,
+	// and in fact no rename recorded at all.
+	if got, ok := h.renamedTitles[doc.ID]; ok {
+		t.Errorf("13.3: expected NO renameDocByID for a no-frontmatter file (would mutate hpath), got %q", got)
+	}
+	if len(h.renamedTitles) != 0 {
+		t.Errorf("13.3: expected no rename calls recorded at all, got %v", h.renamedTitles)
+	}
+}
+
+// 13.5: malformed frontmatter -> file still created, full body uploaded,
+// a report error recorded, no rename/attrs applied.
+func TestSync_MalformedFrontmatter_DegradesGracefully(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	// Unterminated/invalid YAML inside a frontmatter block.
+	content := "---\ntitle: [unclosed\n  : : bad\n---\n# Body\n\nstuff\n"
+	writeGitFile(t, dir, "notebook/bad.md", content)
+	gitCmd(t, dir, "add", "notebook/bad.md")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	h, server := newMockSiYuanServer(t)
+	defer server.Close()
+
+	engine, _ := newSyncEngine(t, server, dir, false)
+
+	report, err := engine.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("Sync failed: %v", err)
+	}
+
+	// File still created (degraded, not aborted).
+	if len(report.Created) != 1 || report.Created[0] != "notebook/bad.md" {
+		t.Fatalf("13.5: expected file still created, got %v", report.Created)
+	}
+	// A compliance/parse error recorded.
+	if len(report.Errors) == 0 {
+		t.Errorf("13.5: expected a report error for the frontmatter parse failure, got none")
+	}
+	if len(h.createdDocs) != 1 {
+		t.Fatalf("expected 1 created doc, got %d", len(h.createdDocs))
+	}
+	doc := h.createdDocs[0]
+	// Full body uploaded (frontmatter NOT stripped because parse failed).
+	if doc.Markdown != content {
+		t.Errorf("13.5: expected full original content uploaded, got %q", doc.Markdown)
+	}
+	// No title/attr mapping applied.
+	if _, ok := h.renamedTitles[doc.ID]; ok {
+		t.Errorf("13.5: expected no renameDocByID on parse failure, got %v", h.renamedTitles)
+	}
+	if _, ok := h.setAttrs[doc.ID]; ok {
+		t.Errorf("13.5: expected no setBlockAttrs on parse failure, got %v", h.setAttrs)
+	}
+}
+
+// Step 7 (non-fatal title API failure): renameDocByID returns an error ->
+// the file is STILL recorded as created and the error is recorded.
+func TestSync_RenameDocByIDError_NonFatal(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	content := "---\ntitle: T\n---\n# Body\n"
+	writeGitFile(t, dir, "notebook/x.md", content)
+	gitCmd(t, dir, "add", "notebook/x.md")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	h, server := newMockSiYuanServer(t)
+	defer server.Close()
+	h.renameErr = true
+
+	engine, _ := newSyncEngine(t, server, dir, false)
+
+	report, err := engine.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("Sync failed: %v", err)
+	}
+
+	if len(report.Created) != 1 || report.Created[0] != "notebook/x.md" {
+		t.Errorf("step 7: expected file still created despite rename error, got %v", report.Created)
+	}
+	if len(report.Errors) == 0 {
+		t.Errorf("step 7: expected a per-file error recorded for the rename failure, got none")
+	}
+	if len(h.createdDocs) != 1 {
+		t.Fatalf("expected 1 created doc, got %d", len(h.createdDocs))
+	}
+}
+
+// 13.2 on the update path: a modified file with frontmatter also sets the title.
+func TestSync_UpdatePath_SetsTitleFromFrontmatter(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	writeGitFile(t, dir, "notes/doc.md", "---\ntitle: First Title\n---\n# Original\n")
+	gitCmd(t, dir, "add", "notes/doc.md")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	h, server := newMockSiYuanServer(t)
+	defer server.Close()
+
+	engine, _ := newSyncEngine(t, server, dir, false)
+	report, err := engine.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("first sync failed: %v", err)
+	}
+	if len(report.Created) != 1 {
+		t.Fatalf("first sync: expected 1 created, got %v", report.Created)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	writeGitFile(t, dir, "notes/doc.md", "---\ntitle: Second Title\n---\n# Modified\n")
+	gitCmd(t, dir, "add", "notes/doc.md")
+	gitCmd(t, dir, "commit", "-m", "modified")
+
+	scanner, _ := git.NewGitScanner(dir)
+	tracker, _ := state.NewStateTracker(dir)
+	ce := compliance.NewComplianceEngine(false)
+	client := siyuan.NewClient(server.URL, "test-token")
+	engine2 := NewSyncEngine(client, scanner, tracker, ce)
+
+	report2, err := engine2.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("second sync failed: %v", err)
+	}
+	if len(report2.Updated) != 1 {
+		t.Fatalf("second sync: expected 1 updated, got %v (errors=%v)", report2.Updated, report2.Errors)
+	}
+
+	// The update path uses the existing SiYuan ID; title must be set on it.
+	var docID string
+	for id := range h.docs {
+		docID = id
+	}
+	if docID == "" && len(h.createdDocs) > 0 {
+		docID = h.createdDocs[0].ID
+	}
+	if got := h.renamedTitles[docID]; got != "Second Title" {
+		t.Errorf("13.2 (update path): expected title %q, got %q (all=%v)", "Second Title", got, h.renamedTitles)
+	}
+
+	// Updated body must be frontmatter-stripped (13.1 also applies on update).
+	rec := h.docs[docID]
+	if strings.Contains(rec.Markdown, "---") || strings.Contains(rec.Markdown, "title:") {
+		t.Errorf("13.1 (update path): updated body still has frontmatter: %q", rec.Markdown)
 	}
 }

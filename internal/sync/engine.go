@@ -11,6 +11,7 @@ import (
 	"siyuan-knowledge-sync/internal/git"
 	"siyuan-knowledge-sync/internal/siyuan"
 	"siyuan-knowledge-sync/internal/state"
+	"siyuan-knowledge-sync/internal/tags"
 	"siyuan-knowledge-sync/internal/types"
 )
 
@@ -21,6 +22,7 @@ type SyncEngine struct {
 	scanner       *git.GitScanner
 	state         *state.StateTracker
 	compliance    *compliance.ComplianceEngine
+	tags          *tags.TagExtractor
 	notebookCache map[string]string
 	repoPath      string
 }
@@ -31,6 +33,7 @@ func NewSyncEngine(client *siyuan.Client, scanner *git.GitScanner, tracker *stat
 		scanner:       scanner,
 		state:         tracker,
 		compliance:    ce,
+		tags:          tags.NewTagExtractor(),
 		notebookCache: make(map[string]string),
 		repoPath:      scanner.RepoPath(),
 	}
@@ -93,14 +96,32 @@ func (e *SyncEngine) processFile(ctx context.Context, report *types.SyncReport, 
 
 	hpath := buildHPath(tf.Path)
 
+	// Step 2: single-pass frontmatter + tag extraction.
+	meta, metaErr := e.tags.ExtractMeta(fixedContent)
+
+	// Step 3 / Step 6: choose the body to upload. On a successful parse we send
+	// the frontmatter-stripped body (13.1); on a parse failure we record a
+	// compliance issue and fall back to the full content (13.5).
+	uploadBody := string(fixedContent)
+	if metaErr == nil {
+		uploadBody = string(meta.Body)
+	} else {
+		report.Errors = append(report.Errors, types.SyncError{
+			File: tf.Path, Message: fmt.Sprintf("frontmatter parse: %v", metaErr),
+		})
+	}
+
+	// Step 3: create or update first to establish the doc ID.
+	var docID string
 	if isNew || existingSiYuanID == "" {
-		docID, err := e.client.CreateDocWithMd(ctx, notebookID, hpath, string(fixedContent))
+		id, err := e.client.CreateDocWithMd(ctx, notebookID, hpath, uploadBody)
 		if err != nil {
 			report.Errors = append(report.Errors, types.SyncError{
 				File: tf.Path, Message: fmt.Sprintf("create document: %v", err),
 			})
 			return
 		}
+		docID = id
 		e.state.Put(types.SyncEntry{
 			LocalPath:  tf.Path,
 			SiYuanID:   docID,
@@ -108,18 +129,51 @@ func (e *SyncEngine) processFile(ctx context.Context, report *types.SyncReport, 
 		})
 		report.Created = append(report.Created, tf.Path)
 	} else {
-		if err := e.client.UpdateBlock(ctx, existingSiYuanID, string(fixedContent)); err != nil {
+		if err := e.client.UpdateBlock(ctx, existingSiYuanID, uploadBody); err != nil {
 			report.Errors = append(report.Errors, types.SyncError{
 				File: tf.Path, Message: fmt.Sprintf("update document: %v", err),
 			})
 			return
 		}
+		docID = existingSiYuanID
 		e.state.Put(types.SyncEntry{
 			LocalPath:  tf.Path,
-			SiYuanID:   existingSiYuanID,
+			SiYuanID:   docID,
 			NotebookID: notebookID,
 		})
 		report.Updated = append(report.Updated, tf.Path)
+	}
+
+	// Step 6: on a frontmatter parse failure, skip title/attr mapping. The body
+	// was already uploaded above and the file is recorded as created/updated.
+	if metaErr != nil {
+		return
+	}
+
+	// Step 4: set the document title from the frontmatter title ONLY when
+	// present (13.2). When there is no frontmatter title we do NOT call
+	// RenameDocByID: that call mutates the SiYuan document's hpath, and a
+	// redundant filename->filename rename on the common no-frontmatter path
+	// changes /name.md and breaks hpath-based resolution (regressed
+	// e2e/TestFullSyncE2E). The document keeps the create-path-derived name,
+	// which satisfies 13.3 without an extra call. Non-fatal: a failure is
+	// recorded per-file but does not change the created/updated outcome.
+	if meta.Title != "" {
+		if err := e.client.RenameDocByID(ctx, docID, meta.Title); err != nil {
+			report.Errors = append(report.Errors, types.SyncError{
+				File: tf.Path, Message: fmt.Sprintf("set document title: %v", err),
+			})
+		}
+	}
+
+	// Step 5: apply extracted tags as custom- block attributes (13.4).
+	// Non-fatal, same policy as the title step.
+	if len(meta.Attrs) > 0 {
+		if err := e.client.SetBlockAttrs(ctx, docID, meta.Attrs); err != nil {
+			report.Errors = append(report.Errors, types.SyncError{
+				File: tf.Path, Message: fmt.Sprintf("set block attributes: %v", err),
+			})
+		}
 	}
 }
 
