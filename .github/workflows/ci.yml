@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
 
+# Run the Node.js-based actions (checkout) on Node 24 now, instead of the
+# deprecated Node 20 runtime (GitHub deprecation, June 2026).
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -17,7 +22,7 @@ jobs:
 
       - name: Install Dagger CLI
         run: |
-          curl -fsSL https://dl.dagger.io/dagger/install.sh | BIN_DIR=/usr/local/bin sh
+          curl -fsSL https://dl.dagger.io/dagger/install.sh | BIN_DIR=/usr/local/bin DAGGER_VERSION=v0.20.8 sh
           dagger version
 
       # Containerized vet + unit/integration suite. The Docker-based e2e

@@ -14,6 +14,11 @@ on:
 permissions:
   contents: write
 
+# Run the Node.js-based actions (checkout, gh-release) on Node 24 now,
+# instead of the deprecated Node 20 runtime (GitHub deprecation, June 2026).
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -35,7 +40,7 @@ jobs:
 
       - name: Install Dagger CLI
         run: |
-          curl -fsSL https://dl.dagger.io/dagger/install.sh | BIN_DIR=/usr/local/bin sh
+          curl -fsSL https://dl.dagger.io/dagger/install.sh | BIN_DIR=/usr/local/bin DAGGER_VERSION=v0.20.8 sh
           dagger version
 
       - name: Cross-compile release artifacts (linux amd64/arm64, darwin amd64/arm64)
