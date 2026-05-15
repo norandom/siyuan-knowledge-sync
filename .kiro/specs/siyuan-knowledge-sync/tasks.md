@@ -191,7 +191,7 @@
   - _Boundary: SiYuanClient_
   - _Depends: 7.2_
 
-- [ ] 7.7 Tests for frontmatter fidelity upload
+- [x] 7.7 Tests for frontmatter fidelity upload
   - Cover: metadata extraction (title present/absent, body stripped, attrs match the auditor, parse failure errors); rename-by-ID request shape; upload path producing stripped body, frontmatter title, fallback filename title, applied tag attributes, parse-failure degradation, and non-fatal title/attribute API errors keeping the file in the created set
   - Observable: the tag-extractor and sync-engine test suites pass with these cases mapped to the acceptance criteria
   - _Requirements: 13.1, 13.2, 13.3, 13.4, 13.5_

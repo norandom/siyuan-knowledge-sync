@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -2581,6 +2582,113 @@ func TestSync_RenameDocByIDError_NonFatal(t *testing.T) {
 	}
 	if len(h.createdDocs) != 1 {
 		t.Fatalf("expected 1 created doc, got %d", len(h.createdDocs))
+	}
+}
+
+// Step 7 / Error Handling row "Title/attr API": SetBlockAttrs returns an error
+// -> the file is STILL recorded as created and a per-file error is recorded.
+// This mirrors TestSync_RenameDocByIDError_NonFatal for the *attrs* half of the
+// non-fatal title/attr API error policy, which was previously unguarded (the
+// mock's setAttrsErr hook existed but was never exercised). It is a meaningful
+// guard: if processFile ever treated a SetBlockAttrs failure as fatal (dropping
+// the file from report.Created or returning early before recording the error),
+// the report.Created length/identity assertion or the report.Errors-non-empty
+// assertion below would fail. The frontmatter has a title so RenameDocByID
+// succeeds first, isolating the SetBlockAttrs error path.
+func TestSync_SetBlockAttrsError_NonFatal(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	content := "---\ntitle: T\ntags: [alpha, beta]\n---\n# Body\n"
+	writeGitFile(t, dir, "notebook/y.md", content)
+	gitCmd(t, dir, "add", "notebook/y.md")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	h, server := newMockSiYuanServer(t)
+	defer server.Close()
+	h.setAttrsErr = true
+
+	engine, _ := newSyncEngine(t, server, dir, false)
+
+	report, err := engine.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("Sync failed: %v", err)
+	}
+
+	if len(report.Created) != 1 || report.Created[0] != "notebook/y.md" {
+		t.Errorf("step 7: expected file still created despite setBlockAttrs error, got %v (errors=%v)", report.Created, report.Errors)
+	}
+	if len(report.Errors) == 0 {
+		t.Errorf("step 7: expected a per-file error recorded for the setBlockAttrs failure, got none")
+	}
+	if len(h.createdDocs) != 1 {
+		t.Fatalf("expected 1 created doc, got %d", len(h.createdDocs))
+	}
+	doc := h.createdDocs[0]
+	// Title still applied (RenameDocByID precedes the failing SetBlockAttrs).
+	if got := h.renamedTitles[doc.ID]; got != "T" {
+		t.Errorf("step 7: expected title still applied before setBlockAttrs failure, got %q (all=%v)", got, h.renamedTitles)
+	}
+	// The failing call must not have persisted attrs in the mock.
+	if _, ok := h.setAttrs[doc.ID]; ok {
+		t.Errorf("step 7: setBlockAttrs failed so no attrs should be recorded, got %v", h.setAttrs)
+	}
+}
+
+// 13.4 value-level (sync layer): for a doc with BOTH frontmatter tags and an
+// inline tag, the exact custom- attr map sent to SetBlockAttrs must equal the
+// union of frontmatter + inline tags — no missing keys, no extra keys, and the
+// "custom-" prefix on every key. TestSync_FrontmatterStrippedTitleAndTagsApplied
+// only asserts two keys are *present*; this asserts the *whole* map by value, so
+// it bites if processFile ever sent a partial set, dropped the inline tag, lost
+// the custom- prefix, or leaked the frontmatter "title" key into the attrs.
+func TestSync_TagAttrs_ExactSetFromFrontmatterAndInline(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	content := "---\ntitle: Doc T\ntags: [alpha, beta]\n---\n# Heading\n\nBody with an #gamma inline tag.\n"
+	writeGitFile(t, dir, "notebook/tagged.md", content)
+	gitCmd(t, dir, "add", "notebook/tagged.md")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	h, server := newMockSiYuanServer(t)
+	defer server.Close()
+
+	engine, _ := newSyncEngine(t, server, dir, false)
+
+	report, err := engine.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("Sync failed: %v", err)
+	}
+	if len(report.Created) != 1 || report.Created[0] != "notebook/tagged.md" {
+		t.Fatalf("expected 1 created notebook/tagged.md, got %v (errors=%v)", report.Created, report.Errors)
+	}
+	if len(report.Errors) != 0 {
+		t.Fatalf("expected 0 errors, got %v", report.Errors)
+	}
+	if len(h.createdDocs) != 1 {
+		t.Fatalf("expected 1 created doc, got %d", len(h.createdDocs))
+	}
+	doc := h.createdDocs[0]
+
+	got := h.setAttrs[doc.ID]
+	if got == nil {
+		t.Fatalf("13.4: expected setBlockAttrs called for doc %s, got %v", doc.ID, h.setAttrs)
+	}
+	want := map[string]string{
+		"custom-alpha": "",
+		"custom-beta":  "",
+		"custom-gamma": "",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("13.4: attrs sent to setBlockAttrs mismatch.\n got:  %v\n want: %v", got, want)
+	}
+	// Defensive: the frontmatter "title" key must never appear as a tag attr.
+	if _, leaked := got["custom-title"]; leaked {
+		t.Errorf("13.4: frontmatter title key leaked into tag attrs: %v", got)
+	}
+	if _, leaked := got["title"]; leaked {
+		t.Errorf("13.4: raw frontmatter 'title' key leaked into tag attrs: %v", got)
 	}
 }
 
