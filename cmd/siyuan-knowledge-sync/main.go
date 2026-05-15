@@ -55,6 +55,20 @@ func loadConfig(path string) (*config.Config, error) {
 	return cfg, nil
 }
 
+// newSiyuanClient builds the SiYuan client and, when configured, attaches
+// Cloudflare Access service-token headers so endpoints behind Cloudflare
+// Access (Zero Trust) are reachable.
+func newSiyuanClient(cfg *config.Config) *siyuan.Client {
+	client := siyuan.NewClient(cfg.Endpoint, cfg.Token)
+	if cfg.CFAccessClientID != "" {
+		client.SetHeader("CF-Access-Client-Id", cfg.CFAccessClientID)
+	}
+	if cfg.CFAccessClientSecret != "" {
+		client.SetHeader("CF-Access-Client-Secret", cfg.CFAccessClientSecret)
+	}
+	return client
+}
+
 func newSyncCommand(configPath *string) *cobra.Command {
 	var dryRun bool
 
@@ -83,7 +97,7 @@ func newSyncCommand(configPath *string) *cobra.Command {
 				return runDryRunAudit(scanner, tracker, ce)
 			}
 
-			client := siyuan.NewClient(cfg.Endpoint, cfg.Token)
+			client := newSiyuanClient(cfg)
 			engine := sync.NewSyncEngine(client, scanner, tracker, ce)
 
 			ctx := context.Background()
@@ -185,7 +199,7 @@ func newDownloadCommand(configPath *string) *cobra.Command {
 				return fmt.Errorf("state tracker: %w", err)
 			}
 
-			client := siyuan.NewClient(cfg.Endpoint, cfg.Token)
+			client := newSiyuanClient(cfg)
 			ce := compliance.NewComplianceEngine(false)
 			engine := sync.NewSyncEngine(client, scanner, tracker, ce)
 
@@ -310,7 +324,7 @@ func newMCPServerCommand(configPath *string) *cobra.Command {
 				return err
 			}
 
-			client := siyuan.NewClient(cfg.Endpoint, cfg.Token)
+			client := newSiyuanClient(cfg)
 			server := mcp.NewServer(client)
 
 			ctx := context.Background()

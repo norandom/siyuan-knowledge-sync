@@ -13,9 +13,10 @@ import (
 )
 
 type Client struct {
-	httpClient *http.Client
-	baseURL    string
-	token      string
+	httpClient   *http.Client
+	baseURL      string
+	token        string
+	extraHeaders map[string]string
 }
 
 func NewClient(endpoint, token string) *Client {
@@ -24,6 +25,16 @@ func NewClient(endpoint, token string) *Client {
 		baseURL:    endpoint,
 		token:      token,
 	}
+}
+
+// SetHeader registers an extra HTTP header sent on every request. Used for
+// Cloudflare Access service tokens (CF-Access-Client-Id/Secret) when the
+// SiYuan endpoint sits behind Cloudflare Access.
+func (c *Client) SetHeader(key, value string) {
+	if c.extraHeaders == nil {
+		c.extraHeaders = make(map[string]string)
+	}
+	c.extraHeaders[key] = value
 }
 
 type APIError struct {
@@ -48,6 +59,9 @@ func (c *Client) doRequest(ctx context.Context, path string, reqBody, respData a
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Token "+c.token)
+	for k, v := range c.extraHeaders {
+		req.Header.Set(k, v)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

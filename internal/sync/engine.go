@@ -284,6 +284,13 @@ func collectDocIDs(nodes []types.TreeNode) []string {
 
 func localPathFromSiYuan(notebookName, hpath string) string {
 	clean := strings.TrimPrefix(hpath, "/")
+	// SiYuan hpaths carry no file extension. Without ".md" the downloaded
+	// file is invisible to the git scanner (which only tracks *.md), which
+	// also makes the next sync treat every downloaded doc as "locally
+	// deleted" and prune it from SiYuan. Always land downloads as .md.
+	if !strings.HasSuffix(clean, ".md") {
+		clean += ".md"
+	}
 	return filepath.Join(notebookName, clean)
 }
 

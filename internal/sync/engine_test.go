@@ -1661,6 +1661,10 @@ func TestLocalPathFromSiYuan(t *testing.T) {
 		{"wiki", "/page.md", "wiki/page.md"},
 		{"notes", "/sub/deep/file.md", "notes/sub/deep/file.md"},
 		{"root", "/readme.md", "root/readme.md"},
+		// SiYuan hpaths have no extension; download must land them as .md
+		// so the git scanner tracks them and sync does not prune them.
+		{"Start", "/Because Security Wiki 2.0", "Start/Because Security Wiki 2.0.md"},
+		{"DevOps", "/2 Zero Trust", "DevOps/2 Zero Trust.md"},
 	}
 	for _, c := range cases {
 		got := localPathFromSiYuan(c.notebook, c.hpath)
