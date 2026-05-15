@@ -661,6 +661,114 @@ func TestNonChallengeNonJSON_GenericError(t *testing.T) {
 	}
 }
 
+// TestCloudflareCredentialsNeverLeak is the consolidated Req 12.5 guard. It
+// configures BOTH the CF-Access-Client-Id and CF-Access-Client-Secret service-
+// token headers with distinctive sample values and exercises every error path
+// doRequest can produce (Cloudflare Access challenge, generic non-JSON, and a
+// normal SiYuan *APIError). For each path it asserts the produced error is the
+// expected type AND that neither sample credential value appears anywhere in
+// err.Error(). These are the meaningful guards for 12.5: if doRequest (or any
+// future error-formatting change) ever interpolated request header values into
+// an error, the strings.Contains assertions below would fail; if the CF
+// classification in doRequest regressed, the per-path type assertions (errors.As
+// for the challenge case, the type switch for APIError, the negative errors.As
+// for the generic case) would fail.
+func TestCloudflareCredentialsNeverLeak(t *testing.T) {
+	const (
+		sampleID     = "cf-access-client-id-SAMPLE-DO-NOT-LEAK"
+		sampleSecret = "cf-access-client-secret-SAMPLE-DO-NOT-LEAK"
+	)
+
+	tests := []struct {
+		name    string
+		handler http.HandlerFunc
+		// check validates the error type for this path. It returns a short
+		// description used only in failure messages.
+		check func(t *testing.T, err error)
+	}{
+		{
+			name: "cloudflare access challenge (403 + CF marker, non-JSON)",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				w.Header().Set("Cf-Mitigated", "challenge")
+				w.WriteHeader(http.StatusForbidden)
+				w.Write([]byte("<html><body>Cloudflare Access login</body></html>"))
+			},
+			check: func(t *testing.T, err error) {
+				var cfErr *CloudflareAccessError
+				if !errors.As(err, &cfErr) {
+					t.Fatalf("expected *CloudflareAccessError, got %T: %v", err, err)
+				}
+			},
+		},
+		{
+			name: "generic non-JSON response (200 text/plain, no CF markers)",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/plain")
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte("oops, something broke"))
+			},
+			check: func(t *testing.T, err error) {
+				var cfErr *CloudflareAccessError
+				if errors.As(err, &cfErr) {
+					t.Fatalf("non-CF non-JSON must not be *CloudflareAccessError, got: %v", err)
+				}
+				if strings.Contains(err.Error(), "unexpected end of JSON input") {
+					t.Errorf("should not be the opaque JSON message, got: %v", err)
+				}
+				if !strings.Contains(err.Error(), "200") {
+					t.Errorf("generic error should include HTTP status 200, got: %v", err)
+				}
+			},
+		},
+		{
+			name: "normal siyuan APIError (non-zero envelope code)",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]any{
+					"code": 500,
+					"msg":  "internal failure",
+					"data": nil,
+				})
+			},
+			check: func(t *testing.T, err error) {
+				var apiErr *APIError
+				if !errors.As(err, &apiErr) {
+					t.Fatalf("expected *APIError, got %T: %v", err, err)
+				}
+				if apiErr.Code != 500 {
+					t.Errorf("expected code 500, got %d", apiErr.Code)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(tt.handler)
+			defer server.Close()
+
+			client := NewClient(server.URL, "test-token")
+			client.SetHeader("CF-Access-Client-Id", sampleID)
+			client.SetHeader("CF-Access-Client-Secret", sampleSecret)
+
+			_, err := client.ListNotebooks(context.Background())
+			if err == nil {
+				t.Fatal("expected an error for this path")
+			}
+			tt.check(t, err)
+
+			msg := err.Error()
+			if strings.Contains(msg, sampleID) {
+				t.Errorf("error must never contain the CF-Access-Client-Id value; got: %v", err)
+			}
+			if strings.Contains(msg, sampleSecret) {
+				t.Errorf("error must never contain the CF-Access-Client-Secret value; got: %v", err)
+			}
+		})
+	}
+}
+
 func TestContextCancellation(t *testing.T) {
 	server := mockServer(t, 0, map[string]any{"notebooks": []types.Notebook{}}, nil)
 	defer server.Close()

@@ -184,7 +184,7 @@
   - _Boundary: SyncEngine_
   - _Depends: 7.3, 7.4_
 
-- [ ] 7.6 Tests for Cloudflare Access error handling
+- [x] 7.6 Tests for Cloudflare Access error handling
   - Cover: typed Cloudflare Access error for a redirect to a Cloudflare Access host and for an empty forbidden body without credentials; clearer generic error for other non-JSON responses; error text never contains the configured secret
   - Observable: the test suite for the client passes with these cases asserting the error type and that credentials are absent from error strings
   - _Requirements: 12.3, 12.5_
