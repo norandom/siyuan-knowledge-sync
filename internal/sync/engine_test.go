@@ -410,7 +410,14 @@ func TestSync_SkipsUnchangedFiles(t *testing.T) {
 	}
 
 	writeGitFile(t, dir, "notes/a.md", "# A - Modified")
-	time.Sleep(100 * time.Millisecond)
+	// Deterministically mark a.md as modified-after-sync. Relying on natural
+	// mtime + a short sleep is flaky on filesystems with coarse mtime
+	// granularity (e.g. containerized CI). git add/commit does not alter the
+	// working-tree file's mtime, so this survives the commit below.
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, "notes/a.md"), future, future); err != nil {
+		t.Fatal(err)
+	}
 	gitCmd(t, dir, "add", "notes/a.md")
 	gitCmd(t, dir, "commit", "-m", "modify a")
 
@@ -445,6 +452,9 @@ func TestSync_SkipsUnchangedFiles(t *testing.T) {
 }
 
 func TestSync_ReportCounts(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission-denied read path is not exercisable as root (containerized CI)")
+	}
 	dir := setupGitDir(t)
 	defer os.RemoveAll(dir)
 
@@ -551,6 +561,9 @@ func TestSync_EmptyRepo(t *testing.T) {
 }
 
 func TestSync_ErrorPerFileDoesNotAbort(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission-denied read path is not exercisable as root (containerized CI)")
+	}
 	dir := setupGitDir(t)
 	defer os.RemoveAll(dir)
 
@@ -1857,6 +1870,9 @@ func TestDownload_MultipleNotebooks(t *testing.T) {
 }
 
 func TestDownload_WriteError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("unwritable-directory path is not exercisable as root (containerized CI)")
+	}
 	dir := setupGitDir(t)
 	defer os.RemoveAll(dir)
 
