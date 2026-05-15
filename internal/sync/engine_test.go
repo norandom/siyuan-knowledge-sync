@@ -58,14 +58,16 @@ func setupGitDir(t *testing.T) string {
 }
 
 type mockSiYuanHandler struct {
-	t           *testing.T
-	notebooks   map[string]string
-	docs        map[string]mockDocRecord
-	nextNBID    int
-	nextDocID   int
-	createdDocs []createdDocRecord
-	updatedDocs []string
-	createdNBs  []string
+	t             *testing.T
+	notebooks     map[string]string
+	docs          map[string]mockDocRecord
+	docTrees      map[string][]types.TreeNode
+	nextNBID      int
+	nextDocID     int
+	createdDocs   []createdDocRecord
+	updatedDocs   []string
+	createdNBs    []string
+	removedDocIDs []string
 }
 
 type mockDocRecord struct {
@@ -110,7 +112,7 @@ func newMockSiYuanServer(t *testing.T) (*mockSiYuanHandler, *httptest.Server) {
 			})
 
 		case "/api/notebook/createNotebook":
-			name, ok := body["notebook"].(string)
+			name, ok := body["name"].(string)
 			if !ok || name == "" {
 				enc.Encode(map[string]any{"code": 1, "msg": "missing notebook name"})
 				return
@@ -119,10 +121,10 @@ func newMockSiYuanServer(t *testing.T) (*mockSiYuanHandler, *httptest.Server) {
 			id := fmt.Sprintf("nb-%d", h.nextNBID)
 			h.notebooks[name] = id
 			h.createdNBs = append(h.createdNBs, name)
-			nb := types.Notebook{ID: id, Name: name}
+			nbResp := types.Notebook{ID: id, Name: name}
 			enc.Encode(map[string]any{
 				"code": 0, "msg": "",
-				"data": nb,
+				"data": map[string]any{"notebook": nbResp},
 			})
 
 		case "/api/filetree/createDocWithMd":
@@ -145,7 +147,7 @@ func newMockSiYuanServer(t *testing.T) (*mockSiYuanHandler, *httptest.Server) {
 			})
 			enc.Encode(map[string]any{
 				"code": 0, "msg": "",
-				"data": map[string]string{"id": id},
+				"data": id,
 			})
 
 		case "/api/block/updateBlock":
@@ -160,9 +162,21 @@ func newMockSiYuanServer(t *testing.T) (*mockSiYuanHandler, *httptest.Server) {
 			h.updatedDocs = append(h.updatedDocs, id)
 			enc.Encode(map[string]any{"code": 0, "msg": ""})
 
+		case "/api/filetree/listDocsByPath":
+			notebookID, _ := body["notebook"].(string)
+			tree := h.docTrees[notebookID]
+			if tree == nil {
+				tree = []types.TreeNode{}
+			}
+			enc.Encode(map[string]any{
+				"code": 0, "msg": "",
+				"data": map[string]any{"files": tree},
+			})
+
 		case "/api/filetree/removeDocByID":
 			id, _ := body["id"].(string)
 			delete(h.docs, id)
+			h.removedDocIDs = append(h.removedDocIDs, id)
 			enc.Encode(map[string]any{"code": 0, "msg": ""})
 
 		default:
@@ -889,7 +903,7 @@ func TestSync_NotebookExists_UsesExisting(t *testing.T) {
 			h.docs[id] = mockDocRecord{ID: id}
 			enc.Encode(map[string]any{
 				"code": 0, "msg": "",
-				"data": map[string]string{"id": id},
+				"data": id,
 			})
 			h.createdDocs = append(h.createdDocs, createdDocRecord{
 				NotebookID: "existing-nb-id",
@@ -1017,13 +1031,13 @@ func newDownloadMockServer(t *testing.T, notebooks []downloadTestNotebook) *http
 					tree = append(tree, types.TreeNode{
 						ID:   doc.ID,
 						Name: doc.HPath,
-						Type: "d",
+						Path: "/" + doc.ID + ".sy",
 					})
 				}
 			}
 			enc.Encode(map[string]any{
 				"code": 0, "msg": "",
-				"data": map[string]any{"tree": tree},
+				"data": map[string]any{"files": tree},
 			})
 
 		case "/api/export/exportMdContent":
@@ -1441,10 +1455,10 @@ func TestDownload_ExportErrorPerDocument(t *testing.T) {
 			enc.Encode(map[string]any{
 				"code": 0, "msg": "",
 				"data": map[string]any{
-					"tree": []types.TreeNode{
-						{ID: "doc-good", Name: "good.md", Type: "d"},
-						{ID: "doc-bad", Name: "bad.md", Type: "d"},
-						{ID: "doc-also-good", Name: "also_good.md", Type: "d"},
+					"files": []types.TreeNode{
+						{ID: "doc-good", Name: "good.md", Path: "/doc-good.sy"},
+						{ID: "doc-bad", Name: "bad.md", Path: "/doc-bad.sy"},
+						{ID: "doc-also-good", Name: "also_good.md", Path: "/doc-also-good.sy"},
 					},
 				},
 			})
@@ -1550,8 +1564,8 @@ func TestDownload_TreeWalkError(t *testing.T) {
 				enc.Encode(map[string]any{
 					"code": 0, "msg": "",
 					"data": map[string]any{
-						"tree": []types.TreeNode{
-							{ID: "doc-1", Name: "a.md", Type: "d"},
+						"files": []types.TreeNode{
+							{ID: "doc-1", Name: "a.md", Path: "/doc-1.sy"},
 						},
 					},
 				})
@@ -1592,24 +1606,24 @@ func TestDownload_TreeWalkError(t *testing.T) {
 
 func TestCollectDocIDs(t *testing.T) {
 	tree := []types.TreeNode{
-		{ID: "1", Name: "doc1", Type: "d"},
+		{ID: "1", Name: "doc1", Path: "/1.sy"},
 		{
-			ID: "2", Name: "folder", Type: "",
+			ID: "2", Name: "folder",
 			Children: []types.TreeNode{
-				{ID: "3", Name: "doc2", Type: "d"},
-				{ID: "4", Name: "doc3", Type: "d"},
+				{ID: "3", Name: "doc2", Path: "/3.sy"},
+				{ID: "4", Name: "doc3", Path: "/4.sy"},
 			},
 		},
 		{
-			ID: "5", Name: "nested", Type: "",
+			ID: "5", Name: "nested",
 			Children: []types.TreeNode{
 				{
-					ID: "6", Name: "sub", Type: "",
+					ID: "6", Name: "sub",
 					Children: []types.TreeNode{
-						{ID: "7", Name: "deep", Type: "d"},
+						{ID: "7", Name: "deep", Path: "/7.sy"},
 					},
 				},
-				{ID: "8", Name: "doc4", Type: "d"},
+				{ID: "8", Name: "doc4", Path: "/8.sy"},
 			},
 		},
 	}
@@ -1700,14 +1714,14 @@ func TestDownload_NestedDocTree(t *testing.T) {
 			enc.Encode(map[string]any{
 				"code": 0, "msg": "",
 				"data": map[string]any{
-					"tree": []types.TreeNode{
+					"files": []types.TreeNode{
 						{
-							ID: "folder-1", Name: "sub", Type: "",
+							ID: "folder-1", Name: "sub",
 							Children: []types.TreeNode{
-								{ID: "doc-1", Name: "nested.md", Type: "d"},
+								{ID: "doc-1", Name: "nested.md", Path: "/doc-1.sy"},
 							},
 						},
-						{ID: "doc-2", Name: "root.md", Type: "d"},
+						{ID: "doc-2", Name: "root.md", Path: "/doc-2.sy"},
 					},
 				},
 			})
@@ -1891,5 +1905,456 @@ func TestDownload_ListNotebooksError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "list notebooks") {
 		t.Errorf("expected 'list notebooks' in error, got %q", err.Error())
+	}
+}
+
+func TestPrune_DeletedFileRemovesSiYuanDocument(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	writeGitFile(t, dir, "notes/keep.md", "# Keep")
+	writeGitFile(t, dir, "notes/delete.md", "# Delete")
+	gitCmd(t, dir, "add", "notes/keep.md", "notes/delete.md")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	h, server := newMockSiYuanServer(t)
+	defer server.Close()
+
+	engine, _ := newSyncEngine(t, server, dir, false)
+
+	report, err := engine.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	if len(report.Created) != 2 {
+		t.Fatalf("first sync: expected 2 created, got %d", len(report.Created))
+	}
+
+	os.Remove(filepath.Join(dir, "notes/delete.md"))
+	gitCmd(t, dir, "rm", "notes/delete.md")
+	gitCmd(t, dir, "commit", "-m", "delete")
+
+	scanner, err := git.NewGitScanner(dir)
+	if err != nil {
+		t.Fatalf("NewGitScanner: %v", err)
+	}
+	tracker, err := state.NewStateTracker(dir)
+	if err != nil {
+		t.Fatalf("NewStateTracker: %v", err)
+	}
+	ce := compliance.NewComplianceEngine(false)
+	client := siyuan.NewClient(server.URL, "test-token")
+	engine2 := NewSyncEngine(client, scanner, tracker, ce)
+
+	report2, err := engine2.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+
+	if len(report2.Pruned) != 1 {
+		t.Fatalf("expected 1 pruned, got %d", len(report2.Pruned))
+	}
+	if report2.Pruned[0] != "notes/delete.md" {
+		t.Errorf("expected 'notes/delete.md', got %q", report2.Pruned[0])
+	}
+
+	if len(h.removedDocIDs) != 1 {
+		t.Fatalf("expected 1 RemoveDocByID call, got %d", len(h.removedDocIDs))
+	}
+
+	allState := engine2.state.All()
+	if _, ok := allState["notes/delete.md"]; ok {
+		t.Error("expected state entry for delete.md to be removed")
+	}
+	if _, ok := allState["notes/keep.md"]; !ok {
+		t.Error("expected state entry for keep.md to persist")
+	}
+}
+
+func TestPrune_StateEntryRemovedAfterDeletion(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	writeGitFile(t, dir, "wiki/doc.md", "# Wiki Doc")
+	gitCmd(t, dir, "add", "wiki/doc.md")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	_, server := newMockSiYuanServer(t)
+	defer server.Close()
+
+	engine, _ := newSyncEngine(t, server, dir, false)
+
+	_, err := engine.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+
+	stateEntries := engine.state.All()
+	if len(stateEntries) != 1 {
+		t.Fatalf("expected 1 state entry after first sync, got %d", len(stateEntries))
+	}
+
+	os.Remove(filepath.Join(dir, "wiki/doc.md"))
+	gitCmd(t, dir, "rm", "wiki/doc.md")
+	gitCmd(t, dir, "commit", "-m", "delete")
+
+	scanner, _ := git.NewGitScanner(dir)
+	tracker, _ := state.NewStateTracker(dir)
+	ce := compliance.NewComplianceEngine(false)
+	client := siyuan.NewClient(server.URL, "test-token")
+	engine2 := NewSyncEngine(client, scanner, tracker, ce)
+
+	report2, err := engine2.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+
+	if len(report2.Pruned) != 1 {
+		t.Fatalf("expected 1 pruned, got %d", len(report2.Pruned))
+	}
+
+	engineState := engine2.state.All()
+	if _, ok := engineState["wiki/doc.md"]; ok {
+		t.Error("expected state entry for wiki/doc.md to be removed")
+	}
+
+	tracker2, err := state.NewStateTracker(dir)
+	if err != nil {
+		t.Fatalf("reload state: %v", err)
+	}
+	if _, ok := tracker2.Get("wiki/doc.md"); ok {
+		t.Error("expected persisted state entry to be removed")
+	}
+}
+
+func TestPrune_MultipleDeletedFiles(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	writeGitFile(t, dir, "notes/a.md", "# A")
+	writeGitFile(t, dir, "notes/b.md", "# B")
+	writeGitFile(t, dir, "notes/c.md", "# C")
+	gitCmd(t, dir, "add", "notes/a.md", "notes/b.md", "notes/c.md")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	h, server := newMockSiYuanServer(t)
+	defer server.Close()
+
+	engine, _ := newSyncEngine(t, server, dir, false)
+
+	report, err := engine.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	if len(report.Created) != 3 {
+		t.Fatalf("first sync: expected 3 created, got %d", len(report.Created))
+	}
+
+	os.Remove(filepath.Join(dir, "notes/a.md"))
+	os.Remove(filepath.Join(dir, "notes/c.md"))
+	gitCmd(t, dir, "rm", "notes/a.md", "notes/c.md")
+	gitCmd(t, dir, "commit", "-m", "delete a and c")
+
+	scanner, _ := git.NewGitScanner(dir)
+	tracker, _ := state.NewStateTracker(dir)
+	ce := compliance.NewComplianceEngine(false)
+	client := siyuan.NewClient(server.URL, "test-token")
+	engine2 := NewSyncEngine(client, scanner, tracker, ce)
+
+	report2, err := engine2.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+
+	if len(report2.Pruned) != 2 {
+		t.Fatalf("expected 2 pruned, got %d: %v", len(report2.Pruned), report2.Pruned)
+	}
+	if len(h.removedDocIDs) != 2 {
+		t.Fatalf("expected 2 RemoveDocByID calls, got %d", len(h.removedDocIDs))
+	}
+
+	allState := engine2.state.All()
+	if _, ok := allState["notes/b.md"]; !ok {
+		t.Error("expected state entry for b.md to persist")
+	}
+	if _, ok := allState["notes/a.md"]; ok {
+		t.Error("expected state entry for a.md to be removed")
+	}
+	if _, ok := allState["notes/c.md"]; ok {
+		t.Error("expected state entry for c.md to be removed")
+	}
+}
+
+func TestPrune_APIErrorDoesNotAbortPruning(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	writeGitFile(t, dir, "notes/good.md", "# Good")
+	writeGitFile(t, dir, "notes/bad.md", "# Bad")
+	gitCmd(t, dir, "add", "notes/good.md", "notes/bad.md")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	_, server := newMockSiYuanServer(t)
+	defer server.Close()
+
+	engine, _ := newSyncEngine(t, server, dir, false)
+
+	report, err := engine.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	if len(report.Created) != 2 {
+		t.Fatalf("first sync: expected 2 created, got %d", len(report.Created))
+	}
+
+	engineState := engine.state.All()
+	badEntry, ok := engineState["notes/bad.md"]
+	if !ok {
+		t.Fatal("expected state entry for bad.md")
+	}
+
+	os.Remove(filepath.Join(dir, "notes/good.md"))
+	os.Remove(filepath.Join(dir, "notes/bad.md"))
+	gitCmd(t, dir, "rm", "notes/good.md", "notes/bad.md")
+	gitCmd(t, dir, "commit", "-m", "delete all")
+
+	failCount := 0
+	failServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		enc := json.NewEncoder(w)
+
+		var body map[string]any
+		if r.Body != nil {
+			json.NewDecoder(r.Body).Decode(&body)
+		}
+
+		switch r.URL.Path {
+		case "/api/filetree/removeDocByID":
+			id, _ := body["id"].(string)
+			if id == badEntry.SiYuanID {
+				failCount++
+				enc.Encode(map[string]any{"code": 500, "msg": "internal error"})
+				return
+			}
+			enc.Encode(map[string]any{"code": 0, "msg": ""})
+		case "/api/filetree/listDocsByPath":
+			enc.Encode(map[string]any{
+				"code": 0, "msg": "",
+				"data": map[string]any{"files": []types.TreeNode{}},
+			})
+		default:
+			enc.Encode(map[string]any{"code": 0, "msg": ""})
+		}
+	}))
+	defer failServer.Close()
+
+	scanner, _ := git.NewGitScanner(dir)
+	tracker, _ := state.NewStateTracker(dir)
+	ce := compliance.NewComplianceEngine(false)
+	failClient := siyuan.NewClient(failServer.URL, "test-token")
+	engine2 := NewSyncEngine(failClient, scanner, tracker, ce)
+
+	report2, err := engine2.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+
+	if failCount != 1 {
+		t.Errorf("expected 1 failed RemoveDocByID call, got %d", failCount)
+	}
+
+	if len(report2.Pruned) != 1 {
+		t.Fatalf("expected 1 pruned (good.md), got %d: %v (errors=%v)",
+			len(report2.Pruned), report2.Pruned, report2.Errors)
+	}
+	if len(report2.Errors) != 1 {
+		t.Fatalf("expected 1 error, got %d: %v", len(report2.Errors), report2.Errors)
+	}
+	if !strings.Contains(report2.Errors[0].Message, "remove document") {
+		t.Errorf("expected 'remove document' in error, got %q", report2.Errors[0].Message)
+	}
+}
+
+func TestPrune_DependencyConflict_SkipsAndReports(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	writeGitFile(t, dir, "notes/parent.md", "# Parent")
+	gitCmd(t, dir, "add", "notes/parent.md")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	h, server := newMockSiYuanServer(t)
+	defer server.Close()
+
+	engine, _ := newSyncEngine(t, server, dir, false)
+
+	report, err := engine.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	if len(report.Created) != 1 {
+		t.Fatalf("first sync: expected 1 created, got %d", len(report.Created))
+	}
+
+	engineState := engine.state.All()
+	parentEntry, ok := engineState["notes/parent.md"]
+	if !ok {
+		t.Fatal("expected state entry for parent.md")
+	}
+
+	nbID := h.notebooks["notes"]
+	h.docTrees = map[string][]types.TreeNode{
+		nbID: {
+			{
+				ID: parentEntry.SiYuanID, Name: "parent.md", Path: "/" + parentEntry.SiYuanID + ".sy",
+				Children: []types.TreeNode{
+					{ID: "orphan-child", Name: "child.md", Path: "/orphan-child.sy"},
+				},
+			},
+		},
+	}
+
+	os.Remove(filepath.Join(dir, "notes/parent.md"))
+	gitCmd(t, dir, "rm", "notes/parent.md")
+	gitCmd(t, dir, "commit", "-m", "delete parent")
+
+	scanner, _ := git.NewGitScanner(dir)
+	tracker, _ := state.NewStateTracker(dir)
+	ce := compliance.NewComplianceEngine(false)
+	client := siyuan.NewClient(server.URL, "test-token")
+	engine2 := NewSyncEngine(client, scanner, tracker, ce)
+
+	report2, err := engine2.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+
+	if len(report2.Pruned) != 0 {
+		t.Errorf("expected 0 pruned (conflict), got %d: %v", len(report2.Pruned), report2.Pruned)
+	}
+
+	if len(report2.Errors) != 1 {
+		t.Fatalf("expected 1 dependency conflict error, got %d: %v", len(report2.Errors), report2.Errors)
+	}
+	if !strings.Contains(report2.Errors[0].Message, "dependency conflict") {
+		t.Errorf("expected 'dependency conflict' in error, got %q", report2.Errors[0].Message)
+	}
+	if !strings.Contains(report2.Errors[0].Message, "orphan-child") {
+		t.Errorf("expected orphan child ID in error, got %q", report2.Errors[0].Message)
+	}
+
+	if len(h.removedDocIDs) != 0 {
+		t.Errorf("expected 0 RemoveDocByID calls, got %d", len(h.removedDocIDs))
+	}
+
+	allState := engine2.state.All()
+	if _, ok := allState["notes/parent.md"]; !ok {
+		t.Error("expected state entry for parent.md to persist (dependency conflict, retry on next sync)")
+	}
+}
+
+func TestPrune_IntegratedInSyncFlow(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	writeGitFile(t, dir, "wiki/doc.md", "# Doc")
+	gitCmd(t, dir, "add", "wiki/doc.md")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	h, server := newMockSiYuanServer(t)
+	defer server.Close()
+
+	engine, _ := newSyncEngine(t, server, dir, false)
+
+	report, err := engine.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	if len(report.Created) != 1 {
+		t.Fatalf("expected 1 created, got %d", len(report.Created))
+	}
+	if len(report.Pruned) != 0 {
+		t.Errorf("expected 0 pruned on first sync, got %d", len(report.Pruned))
+	}
+
+	writeGitFile(t, dir, "wiki/new.md", "# New")
+	os.Remove(filepath.Join(dir, "wiki/doc.md"))
+	gitCmd(t, dir, "add", "wiki/new.md")
+	gitCmd(t, dir, "rm", "wiki/doc.md")
+	gitCmd(t, dir, "commit", "-m", "add new, remove doc")
+
+	scanner, _ := git.NewGitScanner(dir)
+	tracker, _ := state.NewStateTracker(dir)
+	ce := compliance.NewComplianceEngine(false)
+	client := siyuan.NewClient(server.URL, "test-token")
+	engine2 := NewSyncEngine(client, scanner, tracker, ce)
+
+	report2, err := engine2.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+
+	if len(report2.Created) != 1 {
+		t.Errorf("expected 1 created (new.md), got %d", len(report2.Created))
+	}
+	if len(report2.Pruned) != 1 {
+		t.Fatalf("expected 1 pruned (doc.md), got %d", len(report2.Pruned))
+	}
+	if report2.Pruned[0] != "wiki/doc.md" {
+		t.Errorf("expected 'wiki/doc.md' pruned, got %q", report2.Pruned[0])
+	}
+	if len(h.removedDocIDs) != 1 {
+		t.Errorf("expected 1 RemoveDocByID call, got %d", len(h.removedDocIDs))
+	}
+
+	allState := engine2.state.All()
+	if len(allState) != 1 {
+		t.Errorf("expected 1 state entry (new.md), got %d: %v", len(allState), allState)
+	}
+	if _, ok := allState["wiki/new.md"]; !ok {
+		t.Error("expected state entry for wiki/new.md")
+	}
+	if _, ok := allState["wiki/doc.md"]; ok {
+		t.Error("expected state entry for wiki/doc.md to be removed")
+	}
+}
+
+func TestPrune_NoDeletedFiles_EmptyReport(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	writeGitFile(t, dir, "notes/a.md", "# A")
+	gitCmd(t, dir, "add", "notes/a.md")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	h, server := newMockSiYuanServer(t)
+	defer server.Close()
+
+	engine, _ := newSyncEngine(t, server, dir, false)
+
+	report, err := engine.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	if len(report.Created) != 1 {
+		t.Fatalf("expected 1 created, got %d", len(report.Created))
+	}
+
+	scanner, _ := git.NewGitScanner(dir)
+	tracker, _ := state.NewStateTracker(dir)
+	ce := compliance.NewComplianceEngine(false)
+	client := siyuan.NewClient(server.URL, "test-token")
+	engine2 := NewSyncEngine(client, scanner, tracker, ce)
+
+	report2, err := engine2.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+
+	if len(report2.Pruned) != 0 {
+		t.Errorf("expected 0 pruned, got %d", len(report2.Pruned))
+	}
+	if len(h.removedDocIDs) != 0 {
+		t.Errorf("expected 0 RemoveDocByID calls, got %d", len(h.removedDocIDs))
 	}
 }

@@ -56,6 +56,8 @@ func (e *SyncEngine) Sync(ctx context.Context) (*types.SyncReport, error) {
 		}
 	}
 
+	e.pruneDeleted(ctx, trackedFiles, report)
+
 	if err := e.state.Save(); err != nil {
 		return report, fmt.Errorf("save state: %w", err)
 	}
@@ -272,7 +274,7 @@ func (e *SyncEngine) downloadNotebook(ctx context.Context, nb types.Notebook, co
 func collectDocIDs(nodes []types.TreeNode) []string {
 	var ids []string
 	for _, n := range nodes {
-		if n.Type == "d" {
+		if n.IsDoc() {
 			ids = append(ids, n.ID)
 		}
 		ids = append(ids, collectDocIDs(n.Children)...)

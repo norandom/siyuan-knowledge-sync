@@ -91,12 +91,14 @@ func (c *Client) ListNotebooks(ctx context.Context) ([]types.Notebook, error) {
 }
 
 func (c *Client) CreateNotebook(ctx context.Context, name string) (*types.Notebook, error) {
-	var notebook types.Notebook
-	err := c.doRequest(ctx, "/api/notebook/createNotebook", map[string]string{"notebook": name}, &notebook)
+	var result struct {
+		Notebook types.Notebook `json:"notebook"`
+	}
+	err := c.doRequest(ctx, "/api/notebook/createNotebook", map[string]string{"name": name}, &result)
 	if err != nil {
 		return nil, err
 	}
-	return &notebook, nil
+	return &result.Notebook, nil
 }
 
 func (c *Client) RemoveNotebook(ctx context.Context, id string) error {
@@ -104,16 +106,15 @@ func (c *Client) RemoveNotebook(ctx context.Context, id string) error {
 }
 
 func (c *Client) CreateDocWithMd(ctx context.Context, notebookID, hpath, markdown string) (string, error) {
-	var result struct {
-		ID string `json:"id"`
-	}
+	var docID string
 	err := c.doRequest(ctx, "/api/filetree/createDocWithMd", map[string]string{
 		"notebook": notebookID,
 		"path":     hpath,
 		"markdown": markdown,
-	}, &result)
-	return result.ID, err
+	}, &docID)
+	return docID, err
 }
+
 
 func (c *Client) RemoveDocByID(ctx context.Context, id string) error {
 	return c.doRequest(ctx, "/api/filetree/removeDocByID", map[string]string{"id": id}, nil)
@@ -138,13 +139,13 @@ func (c *Client) GetIDsByHPath(ctx context.Context, notebookID, hpath string) ([
 
 func (c *Client) ListDocTree(ctx context.Context, notebookID, path string) ([]types.TreeNode, error) {
 	var result struct {
-		Tree []types.TreeNode `json:"tree"`
+		Files []types.TreeNode `json:"files"`
 	}
 	err := c.doRequest(ctx, "/api/filetree/listDocsByPath", map[string]string{
 		"notebook": notebookID,
 		"path":     path,
 	}, &result)
-	return result.Tree, err
+	return result.Files, err
 }
 
 func (c *Client) UpdateBlock(ctx context.Context, id, markdown string) error {
@@ -165,6 +166,7 @@ func (c *Client) ExportMdContent(ctx context.Context, id string) (*types.ExportR
 	if err != nil {
 		return nil, err
 	}
+	result.ID = id
 	return &result, nil
 }
 

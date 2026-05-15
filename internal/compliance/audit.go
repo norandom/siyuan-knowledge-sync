@@ -125,27 +125,21 @@ func (e *ComplianceEngine) checkHeadingNesting(file string, content []byte) []ty
 
 	var headings []headingInfo
 	inFrontmatter := false
-	fmDashes := 0
 
 	for i, line := range lines {
 		lineStr := string(line)
 
-		if strings.TrimSpace(lineStr) == "---" {
-			if i == 0 || (inFrontmatter && fmDashes == 0) {
+		trimmed := strings.TrimSpace(lineStr)
+		if trimmed == "---" {
+			if !inFrontmatter {
 				inFrontmatter = true
-				fmDashes = 0
 				continue
 			}
-			if inFrontmatter {
-				inFrontmatter = false
-				continue
-			}
+			inFrontmatter = false
+			continue
 		}
 
 		if inFrontmatter {
-			if strings.TrimSpace(lineStr) == "---" {
-				fmDashes++
-			}
 			continue
 		}
 

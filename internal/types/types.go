@@ -1,6 +1,9 @@
 package types
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // APIEnvelope is the generic SiYuan API response wrapper.
 // All SiYuan API endpoints return {code, msg, data}.
@@ -31,18 +34,21 @@ type Document struct {
 
 // TreeNode represents a node in the SiYuan document tree.
 type TreeNode struct {
-	ID           string     `json:"id"`
-	Name         string     `json:"name"`
-	Type         string     `json:"type"`
-	SubFileCount int        `json:"subFileCount,omitempty"`
-	Children     []TreeNode `json:"children,omitempty"`
+	ID       string     `json:"id"`
+	Name     string     `json:"name"`
+	Path     string     `json:"path"`
+	Children []TreeNode `json:"children,omitempty"`
+}
+
+func (n *TreeNode) IsDoc() bool {
+	return strings.HasSuffix(n.Path, ".sy")
 }
 
 // ExportResult contains exported markdown content from SiYuan.
 type ExportResult struct {
 	ID      string `json:"id"`
 	Content string `json:"content"`
-	HPath   string `json:"hpath"`
+	HPath   string `json:"hPath"`
 }
 
 // SyncEntry maps a local file path to a SiYuan document.

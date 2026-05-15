@@ -125,7 +125,7 @@
   - _Depends: 5.1, 5.2_
   - _Requirements: 4, 5, 7, 10_
 
-- [ ] 6.2 End-to-end integration and validation tests
+- [x] 6.2 End-to-end integration and validation tests
   - Full sync E2E: create local `.md` files in a test git repo, run sync, verify SiYuan documents created and mapped correctly; modify files, run sync again, verify updates; delete a file, run sync, verify document pruned
   - Download E2E: start with a populated SiYuan notebook, run download, verify local `.md` files match SiYuan content and hierarchy
   - MCP E2E: start MCP server, call search and retrieve tools, verify results match expected SiYuan data

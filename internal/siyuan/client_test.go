@@ -99,7 +99,7 @@ func TestListNotebooks_Empty(t *testing.T) {
 }
 
 func TestCreateNotebook_Success(t *testing.T) {
-	expected := types.Notebook{ID: "nb-new", Name: "My Notebook", Icon: "icon", Sort: 0, Closed: false}
+	expected := map[string]any{"notebook": types.Notebook{ID: "nb-new", Name: "My Notebook", Icon: "icon", Sort: 0, Closed: false}}
 	var cap capturedRequest
 	server := mockServer(t, 0, expected, &cap)
 	defer server.Close()
@@ -115,8 +115,8 @@ func TestCreateNotebook_Success(t *testing.T) {
 	if cap.auth != "Token test-token" {
 		t.Errorf("auth: got %q, want 'Token test-token'", cap.auth)
 	}
-	if v, ok := cap.body["notebook"]; !ok || v != "My Notebook" {
-		t.Errorf("body.notebook: got %v, want 'My Notebook'", v)
+	if v, ok := cap.body["name"]; !ok || v != "My Notebook" {
+		t.Errorf("body.name: got %v, want 'My Notebook'", v)
 	}
 	if nb.ID != "nb-new" {
 		t.Errorf("notebook ID: got %q, want 'nb-new'", nb.ID)
@@ -143,7 +143,7 @@ func TestRemoveNotebook_Success(t *testing.T) {
 
 func TestCreateDocWithMd_Success(t *testing.T) {
 	var cap capturedRequest
-	server := mockServer(t, 0, map[string]string{"id": "doc-123"}, &cap)
+	server := mockServer(t, 0, "doc-123", &cap)
 	defer server.Close()
 
 	client := NewClient(server.URL, "test-token")
@@ -231,15 +231,15 @@ func TestGetIDsByHPath_Success(t *testing.T) {
 
 func TestListDocTree_Success(t *testing.T) {
 	expected := []types.TreeNode{
-		{ID: "n1", Name: "Doc 1", Type: "doc", SubFileCount: 0},
-		{ID: "n2", Name: "Folder", Type: "dir", SubFileCount: 3,
+		{ID: "n1", Name: "Doc 1", Path: "/n1.sy"},
+		{ID: "n2", Name: "Folder", Path: "/n2",
 			Children: []types.TreeNode{
-				{ID: "n3", Name: "Child", Type: "doc", SubFileCount: 0},
+				{ID: "n3", Name: "Child", Path: "/n3.sy"},
 			},
 		},
 	}
 	var cap capturedRequest
-	server := mockServer(t, 0, map[string]any{"tree": expected}, &cap)
+	server := mockServer(t, 0, map[string]any{"files": expected}, &cap)
 	defer server.Close()
 
 	client := NewClient(server.URL, "test-token")
@@ -255,6 +255,12 @@ func TestListDocTree_Success(t *testing.T) {
 	}
 	if tree[1].Children[0].ID != "n3" {
 		t.Errorf("nested child ID: got %q, want 'n3'", tree[1].Children[0].ID)
+	}
+	if !tree[0].IsDoc() {
+		t.Errorf("Doc 1 should be a document")
+	}
+	if tree[1].IsDoc() {
+		t.Errorf("Folder should not be a document")
 	}
 }
 
