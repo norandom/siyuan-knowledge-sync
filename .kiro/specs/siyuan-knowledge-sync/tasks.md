@@ -141,3 +141,62 @@
   - Performance metrics are logged and within acceptable bounds for the target environment
   - _Depends: 6.1_
   - _Requirements: 4, 10_
+
+- [ ] 7. Cloudflare Access ZTNA and markdown frontmatter fidelity (design Addendum A)
+
+- [x] 7.1 Cloudflare Access service-token configuration and transport
+  - Optional Cloudflare Access service-token credentials accepted from the sync configuration alongside the existing endpoint/token settings
+  - Configured credentials presented on every SiYuan API request; behavior unchanged when they are absent; updated credentials take effect on the next operation
+  - Completed in commit 20644b9; touched-package tests pass and a request against a Cloudflare-Access-protected endpoint succeeds with credentials configured
+  - _Requirements: 12.1, 12.2, 12.4_
+  - _Boundary: Config, SiYuanClient, CLI_
+
+- [x] 7.2 Cloudflare Access challenge detection and actionable error
+  - Detect a Cloudflare Access challenge response (redirect to a Cloudflare Access host, non-JSON content type, or empty forbidden body) before attempting to decode the SiYuan envelope
+  - Return a typed, actionable error stating that Cloudflare Access authentication is required, and aborting the operation; non-challenge non-JSON responses return a clearer generic error than the previous opaque parse failure
+  - Service-token credential values never appear in returned errors or logs
+  - Observable: hitting a Cloudflare-Access-protected endpoint without credentials yields the actionable Cloudflare Access error instead of an "unexpected end of JSON input" message
+  - _Requirements: 12.3, 12.5_
+  - _Boundary: SiYuanClient_
+
+- [ ] 7.3 (P) Frontmatter metadata extraction
+  - Extract the document title, the frontmatter-stripped body, and the existing custom- tag attribute map from markdown content in a single pass, reusing the existing frontmatter split and tag parsing
+  - The existing tag-extraction entry point used by the compliance audit remains unchanged
+  - Observable: given a note with YAML frontmatter, extraction returns the frontmatter title, a body with the frontmatter block removed, and the same custom- tag map the auditor already produces; malformed frontmatter returns an error rather than a partial result
+  - _Requirements: 13.1, 13.3, 13.4_
+  - _Boundary: TagExtractor_
+
+- [ ] 7.4 Rename-document-by-ID client capability
+  - Add a SiYuan client operation that sets a document's title by document ID, envelope-checked like the other client methods
+  - Shares the SiYuan client with 7.2; sequence after it to avoid file contention (not parallel-safe with 7.2)
+  - Observable: calling the operation issues the rename-by-ID request with the document ID and title and surfaces API errors via the standard error envelope
+  - _Requirements: 13.2_
+  - _Boundary: SiYuanClient_
+  - _Depends: 7.2_
+
+- [ ] 7.5 Frontmatter-aware upload in the sync engine
+  - On upload, send the frontmatter-stripped body to SiYuan instead of the raw content
+  - After the document exists, set its title from the frontmatter title, falling back to the file name without its extension; apply the extracted tags as block attributes using the existing attribute operation
+  - On frontmatter parse failure, record a compliance issue and upload the body without title or tag mapping; title and attribute API failures are recorded per file but do not change the created/updated outcome
+  - Observable: syncing a note with frontmatter produces a SiYuan document whose body has no YAML block, whose title matches the frontmatter title, and whose tags appear as custom- block attributes; a parse failure still uploads the body and reports a compliance issue
+  - Explicit integration task wiring TagExtractor and SiYuanClient into the upload path
+  - _Requirements: 13.1, 13.2, 13.3, 13.4, 13.5_
+  - _Boundary: SyncEngine_
+  - _Depends: 7.3, 7.4_
+
+- [ ] 7.6 Tests for Cloudflare Access error handling
+  - Cover: typed Cloudflare Access error for a redirect to a Cloudflare Access host and for an empty forbidden body without credentials; clearer generic error for other non-JSON responses; error text never contains the configured secret
+  - Observable: the test suite for the client passes with these cases asserting the error type and that credentials are absent from error strings
+  - _Requirements: 12.3, 12.5_
+  - _Boundary: SiYuanClient_
+  - _Depends: 7.2_
+
+- [ ] 7.7 Tests for frontmatter fidelity upload
+  - Cover: metadata extraction (title present/absent, body stripped, attrs match the auditor, parse failure errors); rename-by-ID request shape; upload path producing stripped body, frontmatter title, fallback filename title, applied tag attributes, parse-failure degradation, and non-fatal title/attribute API errors keeping the file in the created set
+  - Observable: the tag-extractor and sync-engine test suites pass with these cases mapped to the acceptance criteria
+  - _Requirements: 13.1, 13.2, 13.3, 13.4, 13.5_
+  - _Boundary: TagExtractor, SyncEngine_
+  - _Depends: 7.3, 7.4, 7.5_
+
+## Implementation Notes
+- 7.2: `siyuan.Client.doRequest` now classifies non-JSON / Cloudflare Access responses before envelope decode and returns `*CloudflareAccessError` or a clearer generic error. All client methods (incl. the new `RenameDocByID` in 7.4 and the upload calls in 7.5) inherit this centrally — no per-method CF/non-JSON handling needed. CF challenge detection walks the redirect chain via `r.Request.Response` (Go's client follows redirects by default).

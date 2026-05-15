@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"siyuan-knowledge-sync/internal/types"
@@ -46,6 +48,77 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("siyuan api error (code=%d): %s", e.Code, e.Msg)
 }
 
+// CloudflareAccessError indicates the SiYuan endpoint sits behind Cloudflare
+// Access and the request was met with an Access challenge rather than a SiYuan
+// API response (no valid service-token credentials were presented). It is
+// actionable and never carries credential values.
+type CloudflareAccessError struct {
+	Endpoint string
+}
+
+func (e *CloudflareAccessError) Error() string {
+	return fmt.Sprintf("siyuan endpoint %s requires Cloudflare Access; set cf_access_client_id/cf_access_client_secret in the config", e.Endpoint)
+}
+
+// hasCloudflareAccessHost reports whether the URL's host is a Cloudflare Access
+// login host (*.cloudflareaccess.com). nil-safe.
+func hasCloudflareAccessHost(u *url.URL) bool {
+	if u == nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host == "cloudflareaccess.com" || strings.HasSuffix(host, ".cloudflareaccess.com")
+}
+
+// hasCloudflareAccessMarkers reports whether the response carries signals of a
+// Cloudflare Access challenge: a final or redirected URL on a
+// *.cloudflareaccess.com host, a Cloudflare challenge/mitigation header, a
+// CF-Access-* / cf-ray response header, or an empty body on a 401/403.
+func hasCloudflareAccessMarkers(resp *http.Response, body []byte) bool {
+	if resp == nil {
+		return false
+	}
+
+	// Walk the response chain: the current response plus every prior
+	// response in the redirect history (Go's http.Client follows redirects
+	// by default and links them via Request.Response). The CF Access
+	// challenge markers (Location to the login host, Cf-* headers) typically
+	// live on the intermediate redirect response, not the final one.
+	for r := resp; r != nil; {
+		// Final/requested URL on a *.cloudflareaccess.com host.
+		if r.Request != nil && hasCloudflareAccessHost(r.Request.URL) {
+			return true
+		}
+		// Redirect Location pointing at a CF Access login host.
+		if loc := r.Header.Get("Location"); loc != "" {
+			if locURL, err := url.Parse(loc); err == nil && hasCloudflareAccessHost(locURL) {
+				return true
+			}
+		}
+		// Cloudflare Access / challenge response headers.
+		if r.Header.Get("Cf-Mitigated") != "" || r.Header.Get("Cf-Ray") != "" {
+			return true
+		}
+		for k := range r.Header {
+			lk := strings.ToLower(k)
+			if strings.HasPrefix(lk, "cf-access") || lk == "cf-mitigated" {
+				return true
+			}
+		}
+		if r.Request == nil {
+			break
+		}
+		r = r.Request.Response
+	}
+
+	// Empty body on an auth-challenge status: classic silent CF Access block.
+	if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && len(bytes.TrimSpace(body)) == 0 {
+		return true
+	}
+
+	return false
+}
+
 func (c *Client) doRequest(ctx context.Context, path string, reqBody, respData any) error {
 	body, err := json.Marshal(reqBody)
 	if err != nil {
@@ -74,13 +147,30 @@ func (c *Client) doRequest(ctx context.Context, path string, reqBody, respData a
 		return fmt.Errorf("read response: %w", err)
 	}
 
+	// Classify the response before attempting to decode the SiYuan
+	// envelope. A Cloudflare Access challenge (or any non-SiYuan gateway
+	// response) is not JSON, and decoding it would surface the opaque
+	// "unexpected end of JSON input" error. We never include credential
+	// header values in any error produced here (Req 12.5).
 	var envelope struct {
 		Code int             `json:"code"`
 		Msg  string          `json:"msg"`
 		Data json.RawMessage `json:"data"`
 	}
-	if err := json.Unmarshal(respBytes, &envelope); err != nil {
-		return fmt.Errorf("parse response: %w", err)
+	decodeErr := json.Unmarshal(respBytes, &envelope)
+
+	contentType := resp.Header.Get("Content-Type")
+	looksJSON := strings.Contains(strings.ToLower(contentType), "json")
+
+	if !looksJSON || decodeErr != nil {
+		if hasCloudflareAccessMarkers(resp, respBytes) {
+			return &CloudflareAccessError{Endpoint: c.baseURL}
+		}
+		ct := contentType
+		if ct == "" {
+			ct = "(none)"
+		}
+		return fmt.Errorf("siyuan endpoint returned a non-JSON response (HTTP %d, content-type %q); expected a SiYuan API envelope", resp.StatusCode, ct)
 	}
 
 	if envelope.Code != 0 {

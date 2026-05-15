@@ -3,6 +3,7 @@ package siyuan
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -461,10 +462,160 @@ func TestInvalidJSONResponse(t *testing.T) {
 	client := NewClient(server.URL, "test-token")
 	_, err := client.ListNotebooks(context.Background())
 	if err == nil {
-		t.Fatal("expected parse error for invalid JSON")
+		t.Fatal("expected error for invalid JSON")
 	}
-	if !strings.Contains(err.Error(), "parse response") {
-		t.Errorf("expected 'parse response' error, got: %v", err)
+	// Plain non-JSON 200 with no Cloudflare Access markers must NOT be
+	// classified as a CF Access challenge.
+	var cfErr *CloudflareAccessError
+	if errors.As(err, &cfErr) {
+		t.Errorf("plain non-JSON 200 should not be a CloudflareAccessError, got: %v", err)
+	}
+	// The generic error must be clearer than the previous opaque
+	// "parse response: unexpected end of JSON input": it should name the
+	// status code and content-type.
+	if strings.Contains(err.Error(), "unexpected end of JSON input") {
+		t.Errorf("error should not be the opaque JSON-decode message, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "200") {
+		t.Errorf("generic error should include HTTP status 200, got: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "text/html") {
+		t.Errorf("generic error should include content-type, got: %v", err)
+	}
+}
+
+func TestCloudflareAccessError_Message(t *testing.T) {
+	e := &CloudflareAccessError{Endpoint: "https://docs.example.com"}
+	want := "siyuan endpoint https://docs.example.com requires Cloudflare Access; set cf_access_client_id/cf_access_client_secret in the config"
+	if e.Error() != want {
+		t.Errorf("CloudflareAccessError.Error()\n got:  %q\n want: %q", e.Error(), want)
+	}
+}
+
+// TestCloudflareAccess_RedirectToAccessHost simulates a Cloudflare Access
+// challenge: the protected endpoint 302-redirects to a *.cloudflareaccess.com
+// login host. Go's http.Client follows the redirect, so the final response is
+// a non-JSON login page served from the CF Access host.
+func TestCloudflareAccess_RedirectToAccessHost(t *testing.T) {
+	// CF Access login host (simulated). Its URL host is treated as the marker.
+	cfAccess := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("<html><body>Sign in with Cloudflare Access</body></html>"))
+	}))
+	defer cfAccess.Close()
+
+	// Rewrite the simulated login host so it ends with cloudflareaccess.com.
+	cfHost := strings.TrimPrefix(cfAccess.URL, "http://")
+	protected := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", cfAccess.URL+"/cdn-cgi/access/login")
+		w.Header().Set("Cf-Mitigated", "challenge")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer protected.Close()
+
+	client := NewClient(protected.URL, "test-token")
+	client.SetHeader("CF-Access-Client-Secret", "super-secret-value-DO-NOT-LEAK")
+	_, err := client.ListNotebooks(context.Background())
+	if err == nil {
+		t.Fatal("expected CloudflareAccessError for CF Access challenge")
+	}
+	var cfErr *CloudflareAccessError
+	if !errors.As(err, &cfErr) {
+		t.Fatalf("expected *CloudflareAccessError, got %T: %v", err, err)
+	}
+	if cfErr.Endpoint != protected.URL {
+		t.Errorf("CloudflareAccessError.Endpoint = %q, want %q", cfErr.Endpoint, protected.URL)
+	}
+	if strings.Contains(err.Error(), "super-secret-value-DO-NOT-LEAK") {
+		t.Errorf("error must never contain the service-token secret: %v", err)
+	}
+	_ = cfHost
+}
+
+// TestCloudflareAccess_HTMLChallengeWithHeaderMarker covers the common case
+// where the CF Access challenge is served directly (no observable redirect):
+// non-JSON HTML body plus a CF marker header.
+func TestCloudflareAccess_HTMLChallengeWithHeaderMarker(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cf-Mitigated", "challenge")
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte("<html><body>Cloudflare Access</body></html>"))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-token")
+	client.SetHeader("CF-Access-Client-Id", "client-id-value")
+	client.SetHeader("CF-Access-Client-Secret", "secret-value-DO-NOT-LEAK")
+	_, err := client.ListNotebooks(context.Background())
+	if err == nil {
+		t.Fatal("expected CloudflareAccessError")
+	}
+	var cfErr *CloudflareAccessError
+	if !errors.As(err, &cfErr) {
+		t.Fatalf("expected *CloudflareAccessError, got %T: %v", err, err)
+	}
+	if strings.Contains(err.Error(), "secret-value-DO-NOT-LEAK") || strings.Contains(err.Error(), "client-id-value") {
+		t.Errorf("error must never contain CF credential values: %v", err)
+	}
+}
+
+// TestCloudflareAccess_EmptyForbiddenBody covers a 403 with an empty body and
+// no CF creds configured — treated as a CF Access challenge.
+func TestCloudflareAccess_EmptyForbiddenBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		// empty body
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-token")
+	_, err := client.ListNotebooks(context.Background())
+	if err == nil {
+		t.Fatal("expected CloudflareAccessError for empty 403 body")
+	}
+	var cfErr *CloudflareAccessError
+	if !errors.As(err, &cfErr) {
+		t.Fatalf("expected *CloudflareAccessError, got %T: %v", err, err)
+	}
+	if cfErr.Endpoint != server.URL {
+		t.Errorf("Endpoint = %q, want %q", cfErr.Endpoint, server.URL)
+	}
+}
+
+// TestNonChallengeNonJSON_GenericError ensures a plain non-JSON 200 body with
+// no CF markers yields a clearer generic error (status + content-type) and
+// never the configured service token.
+func TestNonChallengeNonJSON_GenericError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("oops, something broke"))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-token")
+	client.SetHeader("CF-Access-Client-Secret", "leak-me-not-secret")
+	_, err := client.ListNotebooks(context.Background())
+	if err == nil {
+		t.Fatal("expected generic error for non-JSON 200")
+	}
+	var cfErr *CloudflareAccessError
+	if errors.As(err, &cfErr) {
+		t.Errorf("non-CF non-JSON should not be CloudflareAccessError, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "unexpected end of JSON input") {
+		t.Errorf("should not be the opaque JSON message, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "200") {
+		t.Errorf("generic error should include status 200, got: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "text/plain") {
+		t.Errorf("generic error should include content-type, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "leak-me-not-secret") {
+		t.Errorf("error must never contain the service-token secret: %v", err)
 	}
 }
 
