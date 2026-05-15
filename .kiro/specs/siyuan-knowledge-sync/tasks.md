@@ -166,7 +166,7 @@
   - _Requirements: 13.1, 13.3, 13.4_
   - _Boundary: TagExtractor_
 
-- [ ] 7.4 Rename-document-by-ID client capability
+- [x] 7.4 Rename-document-by-ID client capability
   - Add a SiYuan client operation that sets a document's title by document ID, envelope-checked like the other client methods
   - Shares the SiYuan client with 7.2; sequence after it to avoid file contention (not parallel-safe with 7.2)
   - Observable: calling the operation issues the rename-by-ID request with the document ID and title and surfaces API errors via the standard error envelope

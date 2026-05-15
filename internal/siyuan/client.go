@@ -232,6 +232,13 @@ func (c *Client) RenameDoc(ctx context.Context, notebookID, path, title string) 
 	}, nil)
 }
 
+func (c *Client) RenameDocByID(ctx context.Context, id, title string) error {
+	return c.doRequest(ctx, "/api/filetree/renameDocByID", map[string]string{
+		"id":    id,
+		"title": title,
+	}, nil)
+}
+
 func (c *Client) GetIDsByHPath(ctx context.Context, notebookID, hpath string) ([]string, error) {
 	var ids []string
 	err := c.doRequest(ctx, "/api/filetree/getIDsByHPath", map[string]string{

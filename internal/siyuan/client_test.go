@@ -208,6 +208,48 @@ func TestRenameDoc_Success(t *testing.T) {
 	}
 }
 
+func TestRenameDocByID_Success(t *testing.T) {
+	var cap capturedRequest
+	server := mockServer(t, 0, nil, &cap)
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-token")
+	err := client.RenameDocByID(context.Background(), "doc-123", "New Title")
+	if err != nil {
+		t.Fatalf("RenameDocByID failed: %v", err)
+	}
+	if cap.path != "/api/filetree/renameDocByID" {
+		t.Errorf("path: got %q, want /api/filetree/renameDocByID", cap.path)
+	}
+	if cap.auth != "Token test-token" {
+		t.Errorf("auth: got %q, want 'Token test-token'", cap.auth)
+	}
+	if v, _ := cap.body["id"]; v != "doc-123" {
+		t.Errorf("body.id: got %v, want 'doc-123'", v)
+	}
+	if v, _ := cap.body["title"]; v != "New Title" {
+		t.Errorf("body.title: got %v, want 'New Title'", v)
+	}
+}
+
+func TestRenameDocByID_APIError(t *testing.T) {
+	server := mockServer(t, 500, nil, nil)
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-token")
+	err := client.RenameDocByID(context.Background(), "doc-123", "New Title")
+	if err == nil {
+		t.Fatal("expected error for non-zero envelope code")
+	}
+	apiErr, ok := err.(*APIError)
+	if !ok {
+		t.Fatalf("expected *APIError, got %T: %v", err, err)
+	}
+	if apiErr.Code != 500 {
+		t.Errorf("expected code 500, got %d", apiErr.Code)
+	}
+}
+
 func TestGetIDsByHPath_Success(t *testing.T) {
 	expected := []string{"doc-1", "doc-2"}
 	var cap capturedRequest
