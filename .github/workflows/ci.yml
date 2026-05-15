@@ -1,0 +1,26 @@
+name: ci
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Dagger CLI
+        run: |
+          curl -fsSL https://dl.dagger.io/dagger/install.sh | BIN_DIR=/usr/local/bin sh
+          dagger version
+
+      # Containerized vet + unit/integration suite. The Docker-based e2e
+      # package is excluded here by design (it provisions a SiYuan container).
+      - name: Vet & test (internal + cmd)
+        run: dagger --silent call test

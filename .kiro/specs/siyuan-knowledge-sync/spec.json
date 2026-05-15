@@ -1,0 +1,22 @@
+{
+  "feature_name": "siyuan-knowledge-sync",
+  "created_at": "2026-05-14T14:35:11Z",
+  "updated_at": "2026-05-15T09:51:31Z",
+  "language": "en",
+  "phase": "tasks-generated",
+  "approvals": {
+    "requirements": {
+      "generated": true,
+      "approved": true
+    },
+    "design": {
+      "generated": true,
+      "approved": true
+    },
+    "tasks": {
+      "generated": true,
+      "approved": true
+    }
+  },
+  "ready_for_implementation": false
+}
