@@ -159,7 +159,7 @@
   - _Requirements: 12.3, 12.5_
   - _Boundary: SiYuanClient_
 
-- [ ] 7.3 (P) Frontmatter metadata extraction
+- [x] 7.3 (P) Frontmatter metadata extraction
   - Extract the document title, the frontmatter-stripped body, and the existing custom- tag attribute map from markdown content in a single pass, reusing the existing frontmatter split and tag parsing
   - The existing tag-extraction entry point used by the compliance audit remains unchanged
   - Observable: given a note with YAML frontmatter, extraction returns the frontmatter title, a body with the frontmatter block removed, and the same custom- tag map the auditor already produces; malformed frontmatter returns an error rather than a partial result
@@ -200,3 +200,4 @@
 
 ## Implementation Notes
 - 7.2: `siyuan.Client.doRequest` now classifies non-JSON / Cloudflare Access responses before envelope decode and returns `*CloudflareAccessError` or a clearer generic error. All client methods (incl. the new `RenameDocByID` in 7.4 and the upload calls in 7.5) inherit this centrally — no per-method CF/non-JSON handling needed. CF challenge detection walks the redirect chain via `r.Request.Response` (Go's client follows redirects by default).
+- 7.3: `tags.Extract` and the new `tags.ExtractMeta` now share a single `extract` core (drift-proof). For 7.5, call `ExtractMeta` once and use `Meta.Body` (frontmatter-stripped) for create/update, `Meta.Title` (""=absent → filename-without-ext fallback in the engine), `Meta.Attrs` for `SetBlockAttrs`. Malformed frontmatter → `(Meta{}, err)`; engine must treat that as the 13.5 compliance-issue degradation path.

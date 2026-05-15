@@ -3,6 +3,7 @@ package tags
 import (
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -385,4 +386,191 @@ func TestExtract_LeadingWhitespaceBeforeFrontmatter(t *testing.T) {
 	if _, ok := result["custom-ws-tag"]; !ok {
 		t.Errorf("expected custom-ws-tag to be present, got %v", sortedKeys(result))
 	}
+}
+
+// --- ExtractMeta (task 7.3) ---
+
+func TestExtractMeta_FrontmatterTitleAndTags(t *testing.T) {
+	content := []byte(`---
+title: My Frontmatter Title
+tags: [tag1, tag2]
+---
+
+# Heading
+
+Body with #tag3 here.
+`)
+
+	extractor := NewTagExtractor()
+	meta, err := extractor.ExtractMeta(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if meta.Title != "My Frontmatter Title" {
+		t.Errorf("expected title %q, got %q", "My Frontmatter Title", meta.Title)
+	}
+	if bytesContains(meta.Body, "---") {
+		t.Errorf("expected body to have frontmatter block removed, got %q", string(meta.Body))
+	}
+	if !bytesContains(meta.Body, "# Heading") {
+		t.Errorf("expected body to retain content, got %q", string(meta.Body))
+	}
+
+	expectedAttrs := map[string]string{
+		"custom-tag1": "",
+		"custom-tag2": "",
+		"custom-tag3": "",
+	}
+	if !tagsEqual(meta.Attrs, expectedAttrs) {
+		t.Errorf("expected attrs %v, got %v", expectedAttrs, meta.Attrs)
+	}
+
+	extractResult, err := extractor.Extract(content)
+	if err != nil {
+		t.Fatalf("unexpected Extract error: %v", err)
+	}
+	if !tagsEqual(meta.Attrs, extractResult) {
+		t.Errorf("Attrs drifted from Extract: meta=%v extract=%v", meta.Attrs, extractResult)
+	}
+}
+
+func TestExtractMeta_NoFrontmatter(t *testing.T) {
+	content := []byte(`# Document without frontmatter
+
+Some body text with #inlinetag here.
+`)
+
+	extractor := NewTagExtractor()
+	meta, err := extractor.ExtractMeta(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if meta.Title != "" {
+		t.Errorf("expected empty title, got %q", meta.Title)
+	}
+	if !reflect.DeepEqual(meta.Body, content) {
+		t.Errorf("expected body to equal input when no frontmatter, got %q", string(meta.Body))
+	}
+
+	expectedAttrs := map[string]string{
+		"custom-inlinetag": "",
+	}
+	if !tagsEqual(meta.Attrs, expectedAttrs) {
+		t.Errorf("expected attrs %v, got %v", expectedAttrs, meta.Attrs)
+	}
+
+	extractResult, err := extractor.Extract(content)
+	if err != nil {
+		t.Fatalf("unexpected Extract error: %v", err)
+	}
+	if !tagsEqual(meta.Attrs, extractResult) {
+		t.Errorf("Attrs drifted from Extract: meta=%v extract=%v", meta.Attrs, extractResult)
+	}
+}
+
+func TestExtractMeta_FrontmatterWithoutTitle(t *testing.T) {
+	content := []byte(`---
+tags: [only-tag]
+date: 2026-01-01
+---
+
+# Heading
+`)
+
+	extractor := NewTagExtractor()
+	meta, err := extractor.ExtractMeta(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if meta.Title != "" {
+		t.Errorf("expected empty title when frontmatter has no title, got %q", meta.Title)
+	}
+	if bytesContains(meta.Body, "---") {
+		t.Errorf("expected body to have frontmatter block removed, got %q", string(meta.Body))
+	}
+
+	expectedAttrs := map[string]string{
+		"custom-only-tag": "",
+	}
+	if !tagsEqual(meta.Attrs, expectedAttrs) {
+		t.Errorf("expected attrs %v, got %v", expectedAttrs, meta.Attrs)
+	}
+}
+
+func TestExtractMeta_NonScalarTitle(t *testing.T) {
+	content := []byte(`---
+title:
+  - not
+  - a
+  - scalar
+tags: [t1]
+---
+
+# Heading
+`)
+
+	extractor := NewTagExtractor()
+	meta, err := extractor.ExtractMeta(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if meta.Title != "" {
+		t.Errorf("expected empty title for non-scalar title, got %q", meta.Title)
+	}
+}
+
+func TestExtractMeta_MalformedFrontmatter(t *testing.T) {
+	content := []byte(`---
+title: "unterminated
+tags: [t1, t2
+---
+
+# Heading
+`)
+
+	extractor := NewTagExtractor()
+	meta, err := extractor.ExtractMeta(content)
+	if err == nil {
+		t.Fatalf("expected error for malformed frontmatter, got nil (meta=%+v)", meta)
+	}
+	if meta.Title != "" || meta.Body != nil || meta.Attrs != nil {
+		t.Errorf("expected zero Meta on error, got %+v", meta)
+	}
+}
+
+func TestExtractMeta_AttrsMatchExtract_DriftGuard(t *testing.T) {
+	cases := [][]byte{
+		[]byte("---\ntitle: T\ntags: [a, b, c]\n---\n\n# Doc\n\n#d #e in body.\n"),
+		[]byte("# No frontmatter\n\nJust #inline and #more tags.\n"),
+		[]byte("---\ntags:\n  - x\n  - y\n---\n\nBody #z here.\n"),
+		[]byte("---\ntitle: Only Title\n---\n\nNo tags at all.\n"),
+		[]byte(""),
+		[]byte("Plain text, no tags, no frontmatter.\n"),
+		[]byte("---\ntags: single\n---\n\n# Doc\n"),
+	}
+
+	extractor := NewTagExtractor()
+	for i, content := range cases {
+		meta, metaErr := extractor.ExtractMeta(content)
+		extractResult, extractErr := extractor.Extract(content)
+
+		if (metaErr == nil) != (extractErr == nil) {
+			t.Errorf("case %d: error mismatch metaErr=%v extractErr=%v", i, metaErr, extractErr)
+			continue
+		}
+		if metaErr != nil {
+			continue
+		}
+		if !tagsEqual(meta.Attrs, extractResult) {
+			t.Errorf("case %d: Attrs drift: meta=%v extract=%v", i, meta.Attrs, extractResult)
+		}
+	}
+}
+
+func bytesContains(b []byte, sub string) bool {
+	return strings.Contains(string(b), sub)
 }

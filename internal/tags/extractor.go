@@ -14,7 +14,15 @@ import (
 var inlineTagRe = regexp.MustCompile(`(?:\A|\s)#([\pL\pN][\pL\pN_-]*)`)
 
 type frontmatterData struct {
-	Tags yaml.Node `yaml:"tags"`
+	Title yaml.Node `yaml:"title"`
+	Tags  yaml.Node `yaml:"tags"`
+}
+
+// Meta is the result of a single-pass frontmatter + tag extraction.
+type Meta struct {
+	Title string            // frontmatter "title" scalar; "" when absent/unparseable
+	Body  []byte            // content with the YAML frontmatter block removed
+	Attrs map[string]string // existing custom-<tag> map (frontmatter + inline)
 }
 
 type TagExtractor struct {
@@ -28,15 +36,38 @@ func NewTagExtractor() *TagExtractor {
 }
 
 func (e *TagExtractor) Extract(content []byte) (map[string]string, error) {
+	_, _, attrs, err := e.extract(content)
+	if err != nil {
+		return nil, err
+	}
+	return attrs, nil
+}
+
+// ExtractMeta performs a single-pass extraction of the frontmatter title, the
+// frontmatter-stripped body, and the custom-<tag> attribute map (identical to
+// what Extract returns for the same input). Malformed frontmatter returns a
+// non-nil error and a zero Meta rather than a partial result.
+func (e *TagExtractor) ExtractMeta(content []byte) (Meta, error) {
+	title, body, attrs, err := e.extract(content)
+	if err != nil {
+		return Meta{}, err
+	}
+	return Meta{Title: title, Body: body, Attrs: attrs}, nil
+}
+
+// extract is the shared single-pass core used by both Extract and ExtractMeta
+// so the custom-<tag> attribute map cannot drift between the two entry points.
+func (e *TagExtractor) extract(content []byte) (title string, body []byte, attrs map[string]string, err error) {
 	result := make(map[string]string)
 
 	fmBytes, body := splitFrontmatter(content)
 
 	if fmBytes != nil {
-		tags, err := parseFrontmatterTags(fmBytes)
-		if err != nil {
-			return nil, err
+		parsedTitle, tags, perr := parseFrontmatter(fmBytes)
+		if perr != nil {
+			return "", nil, nil, perr
 		}
+		title = parsedTitle
 		for _, tag := range tags {
 			tag = normalizeTag(tag)
 			if tag != "" {
@@ -53,7 +84,7 @@ func (e *TagExtractor) Extract(content []byte) (map[string]string, error) {
 		}
 	}
 
-	return result, nil
+	return title, body, result, nil
 }
 
 func splitFrontmatter(content []byte) ([]byte, []byte) {
@@ -88,32 +119,52 @@ func splitFrontmatter(content []byte) ([]byte, []byte) {
 	return fm, body
 }
 
-func parseFrontmatterTags(fmBytes []byte) ([]string, error) {
+// parseFrontmatter unmarshals the YAML frontmatter once and returns the title
+// scalar (empty when absent or non-scalar) together with the tag list.
+func parseFrontmatter(fmBytes []byte) (string, []string, error) {
 	var fm frontmatterData
 	if err := yaml.Unmarshal(fmBytes, &fm); err != nil {
-		return nil, err
+		return "", nil, err
 	}
 
-	if fm.Tags.IsZero() {
-		return nil, nil
+	title := ""
+	if !fm.Title.IsZero() && fm.Title.Kind == yaml.ScalarNode {
+		if v := fm.Title.Value; v != "" && v != "null" && v != "~" {
+			title = v
+		}
+	}
+
+	tags := tagsFromNode(fm.Tags)
+	return title, tags, nil
+}
+
+// parseFrontmatterTags is retained for backward compatibility; it delegates to
+// the shared single-pass parser and exposes only the tag list.
+func parseFrontmatterTags(fmBytes []byte) ([]string, error) {
+	_, tags, err := parseFrontmatter(fmBytes)
+	return tags, err
+}
+
+func tagsFromNode(node yaml.Node) []string {
+	if node.IsZero() {
+		return nil
 	}
 
 	var tags []string
-
-	switch fm.Tags.Kind {
+	switch node.Kind {
 	case yaml.ScalarNode:
-		if fm.Tags.Value != "" && fm.Tags.Value != "null" && fm.Tags.Value != "~" {
-			tags = append(tags, fm.Tags.Value)
+		if node.Value != "" && node.Value != "null" && node.Value != "~" {
+			tags = append(tags, node.Value)
 		}
 	case yaml.SequenceNode:
-		for _, node := range fm.Tags.Content {
-			if node.Kind == yaml.ScalarNode && node.Value != "" {
-				tags = append(tags, node.Value)
+		for _, n := range node.Content {
+			if n.Kind == yaml.ScalarNode && n.Value != "" {
+				tags = append(tags, n.Value)
 			}
 		}
 	}
 
-	return tags, nil
+	return tags
 }
 
 func extractInlineTags(md goldmark.Markdown, body []byte) []string {
