@@ -30,7 +30,7 @@
   - _Boundary: ontology/router_
   - _Depends: 1.1_
 
-- [ ] 2.2 (P) yaml.Node-based frontmatter rewriter with preservation guard
+- [x] 2.2 (P) yaml.Node-based frontmatter rewriter with preservation guard
   - Implement `AddOntology(content, domain, intent)` that parses YAML via `yaml.Node`, inserts or replaces only the two ontology keys, and re-emits while preserving every other key, its value, and its declaration order.
   - Enforce a post-encode diff guard: re-parse both inputs into a key-indexed view and assert that every non-ontology key's raw value bytes are unchanged. On any other-key mutation, return `ErrUnsafeRewrite` without writing.
   - Treat `date`, `lastmod`, `created`, `updated`, and `original_date` as non-negotiable byte-identical fields covered by the guard.
@@ -157,3 +157,4 @@
 
 ## Implementation Notes
 - 1.2: `tags.Extract` (legacy / compliance audit) and `tags.ExtractMeta` (sync engine) intentionally diverge — only `ExtractMeta` injects `custom-domain` / `custom-intent` into `Meta.Attrs`. The 7.3 drift-guard still holds because its 7 fixtures carry no `domain:`/`intent:`. For task 2.4 the compliance ontology-schema rule must source the raw `yaml.Node` (`Meta.Domain`/`Meta.Intent` are surface-only strings here; node-kind multi-value detection is the validator's job in `internal/ontology/schema`).
+- 2.2: `ontology.AddOntology` returns `ErrUnsafeRewrite` via two layered guards (temporal-fields-first, then general value-bytes). For task 3.4 (migrate apply) treat `ErrUnsafeRewrite` from `AddOntology` as a per-entry structured error and skip rename/attrs for that entry; never overwrite the source file. The rewriter is clock-free in production; the CRLF→LF normalization on inputs is documented.
