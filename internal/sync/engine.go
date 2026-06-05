@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -64,7 +65,17 @@ func (e *SyncEngine) Sync(ctx context.Context) (*types.SyncReport, error) {
 		}
 	}
 
-	e.pruneDeleted(ctx, trackedFiles, report)
+	// Re-scan tracked files before prune so paths that were `git mv`'d by
+	// ontology routing (task 3.2) appear under their new canonical paths.
+	// Without the re-scan, pruneDeleted would treat the post-route state
+	// entry at the new path as "not tracked" and remove it, undoing the
+	// sync that just happened.
+	postRouteFiles, err := e.scanner.ListTrackedMdFiles()
+	if err != nil {
+		postRouteFiles = trackedFiles
+	}
+
+	e.pruneDeleted(ctx, postRouteFiles, report)
 
 	if err := e.state.Save(); err != nil {
 		return report, fmt.Errorf("save state: %w", err)
@@ -128,6 +139,72 @@ func (e *SyncEngine) processFile(ctx context.Context, report *types.SyncReport, 
 		}
 	}
 
+	// Step 2 (Frontmatter + tag extraction): hoisted before notebook /
+	// hpath resolution because the routing decision (3.2) depends on
+	// meta.Domain. After a successful RouteMove the file lives at a new
+	// path, so resolveNotebook and buildHPath must run against THAT path.
+	// On a frontmatter parse failure we fall through with metaErr non-nil
+	// and the legacy 13.5 degraded-upload path takes over below.
+	meta, metaErr := e.tags.ExtractMeta(fixedContent)
+
+	// Step 2 (Route, Req 3.2/3.3/3.4/3.6 + design "sync/engine (extended)
+	// Step 2"): opt-in via declaration — routing fires only when the file
+	// declared a Domain. Files without a domain frontmatter keep their
+	// legacy sync behavior (preserves every existing 13.x test + e2e).
+	//
+	// On RouteMove:
+	//   1. Check state.Move(old, new) eligibility FIRST via a synthetic
+	//      probe so an ErrCollision does NOT leave a half-applied move
+	//      on disk (no partial state — task brief: "file still at
+	//      original path").
+	//   2. git mv old -> new (creating any missing parent dirs).
+	//   3. git commit -m "ontology-route: <old> -> <new>" (exact subject).
+	//   4. state.Move(old, new) — must succeed since we already probed.
+	//   5. Rewrite tf.Path to the new path for the remainder of processFile.
+	// AssetWarnings are appended to report.Errors as warning-shaped entries
+	// (carry-in-error-channel per the existing per-file issue pattern) and
+	// do NOT abort the file (Req 9.4).
+	if metaErr == nil && meta.Domain != "" {
+		router := ontology.Router{}
+		decision := router.Route(ontology.Domain(meta.Domain), tf.Path, meta.Body)
+
+		for _, w := range decision.AssetWarnings {
+			report.Errors = append(report.Errors, types.SyncError{
+				File: tf.Path,
+				Message: fmt.Sprintf(
+					"asset reference would be invalidated by move: %s [%s -> %s, target_exists=%t]",
+					w.Reference, w.OldResolved, w.NewResolved, w.TargetExists,
+				),
+			})
+		}
+
+		if decision.Action == ontology.RouteMove {
+			// Probe state collision BEFORE touching the working tree.
+			if collision := e.probeStateCollision(tf.Path, decision.TargetPath); collision != nil {
+				report.Errors = append(report.Errors, types.SyncError{
+					File:    tf.Path,
+					Message: fmt.Sprintf("state collision: %v", collision),
+				})
+				return
+			}
+			if err := gitMvAndCommit(e.repoPath, tf.Path, decision.TargetPath); err != nil {
+				report.Errors = append(report.Errors, types.SyncError{
+					File:    tf.Path,
+					Message: fmt.Sprintf("ontology route: %v", err),
+				})
+				return
+			}
+			if err := e.state.Move(tf.Path, decision.TargetPath); err != nil {
+				report.Errors = append(report.Errors, types.SyncError{
+					File:    tf.Path,
+					Message: fmt.Sprintf("state collision: %v", err),
+				})
+				return
+			}
+			tf.Path = decision.TargetPath
+		}
+	}
+
 	notebookID, err := e.resolveNotebook(ctx, tf.Path)
 	if err != nil {
 		report.Errors = append(report.Errors, types.SyncError{
@@ -137,9 +214,6 @@ func (e *SyncEngine) processFile(ctx context.Context, report *types.SyncReport, 
 	}
 
 	hpath := buildHPath(tf.Path)
-
-	// Step 2: single-pass frontmatter + tag extraction.
-	meta, metaErr := e.tags.ExtractMeta(fixedContent)
 
 	// Step 3 / Step 6: choose the body to upload. On a successful parse we send
 	// the frontmatter-stripped body (13.1); on a parse failure we record a
@@ -468,3 +542,62 @@ func extractFrontmatterBytes(content []byte) ([]byte, bool) {
 	}
 	return afterOpen[:closeIdx], true
 }
+
+// probeStateCollision is a non-mutating check that mirrors what
+// StateTracker.Move would return if invoked. Returning nil means a later
+// state.Move is guaranteed not to fail with ErrCollision for this pair.
+// Used before git mv so a collision never produces a half-applied move on
+// disk (Req 3.2: file still at original path on collision).
+//
+// It returns state.ErrCollision when the target path already tracks a
+// DIFFERENT SiYuanID than the source. All other configurations are
+// permitted (oldPath == newPath, missing source, same-SiYuanID target).
+func (e *SyncEngine) probeStateCollision(oldPath, newPath string) error {
+	if oldPath == newPath {
+		return nil
+	}
+	src, hasSrc := e.state.Get(oldPath)
+	tgt, hasTgt := e.state.Get(newPath)
+	if !hasSrc || !hasTgt {
+		return nil
+	}
+	if src.SiYuanID == tgt.SiYuanID {
+		return nil
+	}
+	return state.ErrCollision
+}
+
+// gitMvAndCommit runs `git mv` from oldPath to newPath relative to
+// repoPath and then commits the rename with the exact subject line the
+// 3.2 routing test grep'd for. Parent directories for newPath are created
+// as needed (git mv requires the destination parent to exist).
+//
+// On any subprocess failure the function returns a wrapped error and the
+// caller records a per-file SyncError + returns, skipping the upload.
+// Partial state is unsafe: a half-applied move followed by an upload
+// would leave the working tree at the new path with no commit.
+func gitMvAndCommit(repoPath, oldPath, newPath string) error {
+	targetDir := filepath.Dir(filepath.Join(repoPath, newPath))
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", targetDir, err)
+	}
+
+	mv := exec.Command("git", "-C", repoPath, "mv", oldPath, newPath)
+	if out, err := mv.CombinedOutput(); err != nil {
+		return fmt.Errorf("git mv %s -> %s: %w (%s)", oldPath, newPath, err, strings.TrimSpace(string(out)))
+	}
+
+	subject := fmt.Sprintf("ontology-route: %s -> %s", oldPath, newPath)
+	commit := exec.Command("git", "-C", repoPath, "commit", "-q", "-m", subject)
+	commit.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=siyuan-knowledge-sync",
+		"GIT_AUTHOR_EMAIL=siyuan-knowledge-sync@local",
+		"GIT_COMMITTER_NAME=siyuan-knowledge-sync",
+		"GIT_COMMITTER_EMAIL=siyuan-knowledge-sync@local",
+	)
+	if out, err := commit.CombinedOutput(); err != nil {
+		return fmt.Errorf("git commit %q: %w (%s)", subject, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
