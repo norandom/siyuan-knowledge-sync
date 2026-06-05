@@ -43,6 +43,7 @@ func newRootCommand() *cobra.Command {
 		newAuditCommand(&configPath),
 		newMCPServerCommand(&configPath),
 		newSchemaCommand(),
+		newMigrateCommand(&configPath),
 	)
 
 	return cmd

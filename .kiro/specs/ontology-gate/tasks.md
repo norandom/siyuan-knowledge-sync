@@ -112,7 +112,7 @@
   - _Boundary: cmd/siyuan-knowledge-sync, ontology/schema, ontology/router_
   - _Depends: 1.1, 2.1_
 
-- [ ] 4.2 migrate apply subcommand
+- [x] 4.2 migrate apply subcommand
   - Add a `migrate` Cobra subcommand with an `apply` sub-action accepting a positional plan-JSON path.
   - Load + validate the plan, load config (existing path resolution), and call `migrate.Apply`.
   - Print a `MigrationReport` to stderr in the same style as the existing `printSyncReport`.

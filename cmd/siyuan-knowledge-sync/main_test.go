@@ -3,13 +3,17 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"siyuan-knowledge-sync/internal/migrate"
 	"siyuan-knowledge-sync/internal/ontology"
 )
 
@@ -525,5 +529,178 @@ func TestSchemaCommand_RegisteredOnRoot(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected schema subcommand registered on root command")
+	}
+}
+
+// --- Task 4.2: migrate apply subcommand tests ---
+
+func TestMigrateCommand_Exists(t *testing.T) {
+	cmd := newRootCommand()
+	for _, sub := range cmd.Commands() {
+		if sub.Use == "migrate" {
+			foundApply := false
+			for _, sub2 := range sub.Commands() {
+				if strings.HasPrefix(sub2.Use, "apply") {
+					foundApply = true
+					break
+				}
+			}
+			if !foundApply {
+				t.Fatal("expected migrate command to have an apply sub-action")
+			}
+			return
+		}
+	}
+	t.Fatal("expected migrate subcommand registered on root command")
+}
+
+func TestMigrateApply_PrintsReport(t *testing.T) {
+	repoDir := t.TempDir()
+	gitInit := exec.Command("git", "-C", repoDir, "init")
+	if out, err := gitInit.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	// Configure committer so any incidental commit doesn't blow up; the
+	// retire_siyuan op doesn't actually commit, but be safe.
+	for _, kv := range [][]string{
+		{"user.email", "test@test.com"},
+		{"user.name", "test"},
+		{"commit.gpgsign", "false"},
+	} {
+		c := exec.Command("git", "-C", repoDir, "config", kv[0], kv[1])
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git config %s: %v\n%s", kv[0], err, out)
+		}
+	}
+
+	// Mock SiYuan: only handle /api/filetree/removeDocByID for OpRetireSiyuan.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/filetree/removeDocByID" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"code":0,"msg":"","data":null}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	// Build a config file pointing at the test server.
+	configPath := filepath.Join(repoDir, ".siyuan-sync.yaml")
+	configBody := "endpoint: \"" + srv.URL + "\"\n" +
+		"token: \"test\"\n" +
+		"repo_path: \"" + repoDir + "\"\n"
+	if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	// Build a minimal plan with a single OpRetireSiyuan entry.
+	plan := migrate.MigrationPlan{
+		Version:     migrate.PlanV1,
+		Source:      "/test/source",
+		GeneratedAt: time.Now().UTC(),
+		Entries: []migrate.PlanEntry{
+			{
+				Op:          migrate.OpRetireSiyuan,
+				SourcePath:  "doc-to-retire",
+				SiYuanDocID: "doc-to-retire",
+			},
+		},
+	}
+	planJSON, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatalf("marshal plan: %v", err)
+	}
+	planPath := filepath.Join(repoDir, "plan.json")
+	if err := os.WriteFile(planPath, planJSON, 0o644); err != nil {
+		t.Fatalf("write plan: %v", err)
+	}
+
+	cmd := newRootCommand()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"-c", configPath, "migrate", "apply", planPath})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("migrate apply: %v\noutput:\n%s", err, buf.String())
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Migration Report") {
+		t.Errorf("expected 'Migration Report' header in output, got:\n%s", output)
+	}
+	if !strings.Contains(output, "Retired: 1") {
+		t.Errorf("expected 'Retired: 1' in output, got:\n%s", output)
+	}
+	if !strings.Contains(output, "doc-to-retire") {
+		t.Errorf("expected source path 'doc-to-retire' in output, got:\n%s", output)
+	}
+}
+
+func TestMigrateApply_InvalidPlanReturnsError(t *testing.T) {
+	repoDir := t.TempDir()
+	// Config still has to be loadable for the command to reach the plan step.
+	configPath := filepath.Join(repoDir, ".siyuan-sync.yaml")
+	configBody := "endpoint: \"http://127.0.0.1:1\"\n" +
+		"token: \"test\"\n" +
+		"repo_path: \"" + repoDir + "\"\n"
+	if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	// Bad version 99 — Validate rejects it before any side effect.
+	badPlan := map[string]interface{}{
+		"version":      99,
+		"source":       "/test/source",
+		"generated_at": "2026-06-05T00:00:00Z",
+		"entries":      []interface{}{},
+	}
+	planJSON, err := json.Marshal(badPlan)
+	if err != nil {
+		t.Fatalf("marshal plan: %v", err)
+	}
+	planPath := filepath.Join(repoDir, "plan.json")
+	if err := os.WriteFile(planPath, planJSON, 0o644); err != nil {
+		t.Fatalf("write plan: %v", err)
+	}
+
+	cmd := newRootCommand()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"-c", configPath, "migrate", "apply", planPath})
+
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatalf("expected error for invalid plan, got nil\noutput:\n%s", buf.String())
+	}
+	if !strings.Contains(err.Error(), "invalid plan") {
+		t.Errorf("expected error containing 'invalid plan', got: %v", err)
+	}
+}
+
+func TestMigrateApply_MissingPlanFile(t *testing.T) {
+	repoDir := t.TempDir()
+	configPath := filepath.Join(repoDir, ".siyuan-sync.yaml")
+	configBody := "endpoint: \"http://127.0.0.1:1\"\n" +
+		"token: \"test\"\n" +
+		"repo_path: \"" + repoDir + "\"\n"
+	if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	missingPath := filepath.Join(repoDir, "no-such-plan.json")
+
+	cmd := newRootCommand()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"-c", configPath, "migrate", "apply", missingPath})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatalf("expected error for missing plan file, got nil\noutput:\n%s", buf.String())
+	}
+	if !strings.Contains(err.Error(), "read plan") {
+		t.Errorf("expected error containing 'read plan', got: %v", err)
 	}
 }
