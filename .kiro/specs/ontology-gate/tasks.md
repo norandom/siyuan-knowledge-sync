@@ -103,7 +103,7 @@
 
 - [ ] 4. CLI subcommands and AI Skill
 
-- [ ] 4.1 (P) schema subcommand (single source of truth for the Skill)
+- [x] 4.1 (P) schema subcommand (single source of truth for the Skill)
   - Add a `schema` Cobra subcommand under the existing CLI; `--json` prints the canonical JSON document defined in the design (closed enums, canonical folder map, required keys, contract version).
   - Without `--json`, print a human-readable summary suitable for `--help`-style inspection.
   - Register the subcommand in main alongside the existing sync/download/audit/mcp-server set.

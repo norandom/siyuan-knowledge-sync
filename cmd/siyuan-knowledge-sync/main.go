@@ -42,6 +42,7 @@ func newRootCommand() *cobra.Command {
 		newDownloadCommand(&configPath),
 		newAuditCommand(&configPath),
 		newMCPServerCommand(&configPath),
+		newSchemaCommand(),
 	)
 
 	return cmd

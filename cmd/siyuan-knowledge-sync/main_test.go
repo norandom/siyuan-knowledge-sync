@@ -2,11 +2,15 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"siyuan-knowledge-sync/internal/ontology"
 )
 
 func TestRootCommand_Exists(t *testing.T) {
@@ -403,4 +407,123 @@ func TestMainFunction_Builds(t *testing.T) {
 
 func TestMainFunction_Build_SiYuanKnowledgeSync(t *testing.T) {
 	_ = main
+}
+
+// --- Task 4.1: schema subcommand tests ---
+
+type schemaDocTest struct {
+	Version int `json:"version"`
+	Domain  struct {
+		Values  []string          `json:"values"`
+		Folders map[string]string `json:"folders"`
+	} `json:"domain"`
+	Intent struct {
+		Values []string `json:"values"`
+	} `json:"intent"`
+	RequiredKeys []string `json:"required_keys"`
+}
+
+func TestSchemaCommand_JSON_RoundTripsToOntologyEnums(t *testing.T) {
+	cmd := newSchemaCommand()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"--json"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("schema --json exec: %v", err)
+	}
+
+	var doc schemaDocTest
+	if err := json.Unmarshal(buf.Bytes(), &doc); err != nil {
+		t.Fatalf("unmarshal schema JSON: %v\nraw=%s", err, buf.String())
+	}
+
+	if doc.Version != 1 {
+		t.Errorf("Version = %d, want 1", doc.Version)
+	}
+
+	wantDomains := make([]string, 0, len(ontology.AllDomains()))
+	for _, d := range ontology.AllDomains() {
+		wantDomains = append(wantDomains, string(d))
+	}
+	if !slices.Equal(doc.Domain.Values, wantDomains) {
+		t.Errorf("Domain.Values = %v, want %v", doc.Domain.Values, wantDomains)
+	}
+
+	wantIntents := make([]string, 0, len(ontology.AllIntents()))
+	for _, i := range ontology.AllIntents() {
+		wantIntents = append(wantIntents, string(i))
+	}
+	if !slices.Equal(doc.Intent.Values, wantIntents) {
+		t.Errorf("Intent.Values = %v, want %v", doc.Intent.Values, wantIntents)
+	}
+
+	if len(doc.Domain.Folders) != 6 {
+		t.Errorf("Domain.Folders count = %d, want 6", len(doc.Domain.Folders))
+	}
+	router := ontology.Router{}
+	for _, d := range ontology.AllDomains() {
+		got, ok := doc.Domain.Folders[string(d)]
+		if !ok {
+			t.Errorf("Domain.Folders missing entry for %q", string(d))
+			continue
+		}
+		if want := router.CanonicalFolder(d); got != want {
+			t.Errorf("Domain.Folders[%q] = %q, want %q", string(d), got, want)
+		}
+	}
+
+	if !slices.Equal(doc.RequiredKeys, []string{"domain", "intent"}) {
+		t.Errorf("RequiredKeys = %v, want [domain intent]", doc.RequiredKeys)
+	}
+}
+
+func TestSchemaCommand_NoFlag_PrintsHumanReadable(t *testing.T) {
+	cmd := newSchemaCommand()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("schema exec: %v", err)
+	}
+
+	output := buf.String()
+	if output == "" {
+		t.Fatal("expected non-empty human-readable schema output")
+	}
+	for _, needle := range []string{"domain", "intent"} {
+		if !strings.Contains(output, needle) {
+			t.Errorf("human output missing %q; got:\n%s", needle, output)
+		}
+	}
+
+	// Must mention at least one canonical folder.
+	router := ontology.Router{}
+	foundFolder := false
+	for _, d := range ontology.AllDomains() {
+		if strings.Contains(output, router.CanonicalFolder(d)) {
+			foundFolder = true
+			break
+		}
+	}
+	if !foundFolder {
+		t.Errorf("human output missing any canonical folder name; got:\n%s", output)
+	}
+}
+
+func TestSchemaCommand_RegisteredOnRoot(t *testing.T) {
+	cmd := newRootCommand()
+	found := false
+	for _, sub := range cmd.Commands() {
+		if sub.Use == "schema" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected schema subcommand registered on root command")
+	}
 }
