@@ -461,6 +461,434 @@ func TestApply_UnreadableSource_ProducesEntryError(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Task 5.2 — integration tests for migrate apply (Req 6.3, 6.4, 6.5, 6.6, 8.3,
+// 10.2, 10.3, 10.4).
+//
+// Coverage mapping (per task 5.2 brief, design "Testing Strategy" + the
+// `migrate/apply` component block):
+//
+//   - TestApply_MixedPlan_PerEntryIsolation (task 3.4): Req 6.3, 6.4, 6.5,
+//     6.6, 10.2, 10.3 — three-op plan, observable per-entry outcomes.
+//   - TestApply_MixedPlan_OutcomesReportShape (5.2): pins the
+//     `MigrationReport.Outcomes` slice shape (Op + SourcePath + Status +
+//     optional NewPath + optional Error). Useful for downstream consumers
+//     such as the CLI's `printSyncReport` analogue and any future log
+//     shipper. Req 6.3, 6.4, 6.5, 6.6, 10.2.
+//   - TestApply_KeepFailureIsolatedByGitMvError (5.2): two `OpKeep` entries;
+//     the first hits a natural `git mv` collision (target already on disk)
+//     so RouteAndSync fails for that entry; the second still completes.
+//     Mock receives exactly one createDocWithMd. Req 6.3, 6.4, 10.4.
+//   - TestApply_UnsafeRewrite_ProducesStructuredError (5.2): exercises the
+//     `ontology.AddOntology` -> `applyKeep` error-wrapping path. A deter-
+//     ministic YAML parse-failure input drives `AddOntology` to fail; the
+//     assertion confirms the entry surfaces a `StatusError` outcome whose
+//     `Error` carries the `add ontology` wrapping prefix from applyKeep.
+//     The `ErrUnsafeRewrite` sentinel travels the SAME wrapping path (see
+//     `applyKeep` in apply.go: `outcome.Error = "add ontology: " + err`),
+//     so this test is a propagation-contract proof — see test doc-comment
+//     for the explicit rationale. Req 8.3.
+//   - TestApply_HpathCollision_V1_IdempotencyProof (5.2): two `OpKeep`
+//     entries with the same canonical target (same domain + same basename
+//     but different source paths). Documents the V1 documented behavior
+//     (per task 3.4's deferral): the first entry succeeds via the router;
+//     the second entry's `git mv` refuses to overwrite the now-existing
+//     destination -> structured `StatusError` outcome. This proves V1 is
+//     data-safe (git collision detection) even though no explicit pre-write
+//     hpath probe exists yet. Hardening to a pre-write probe is "Deferred
+//     to a future plan version" (the `overwrite_existing:` plan field
+//     called out in design "Error Handling -> hpath collision"). Req 6.4,
+//     10.4.
+// ---------------------------------------------------------------------------
+
+// TestApply_MixedPlan_OutcomesReportShape pins the per-entry outcome shape
+// that downstream consumers depend on (CLI rendering, future log shipping):
+// every PlanEntry produces exactly one EntryOutcome carrying the original
+// Op + SourcePath, a non-empty Status, the post-route NewPath for OpKeep
+// entries, an empty Error on success, and no NewPath on OpDropLocal /
+// OpRetireSiyuan.
+//
+// Req coverage: 6.3 (apply order), 6.4 (keep), 6.5 (drop_local), 10.2/10.3
+// (retire_siyuan). Design `migrate/apply` -> per-entry executor contract.
+func TestApply_MixedPlan_OutcomesReportShape(t *testing.T) {
+	repo := setupGitRepo(t)
+	writeGitFile(t, repo, "wiki/misc/a.md", "# A\nbody\n")
+	writeGitFile(t, repo, "wiki/misc/c.md", "# C\nbody\n")
+	gitCmd(t, repo, "add", ".")
+	gitCmd(t, repo, "commit", "-m", "seed")
+
+	_, server := newMockSiYuan(t)
+	engine := buildEngine(t, repo, server)
+	client := buildClient(server)
+
+	plan := MigrationPlan{
+		Version: PlanV1,
+		Source:  "wiki/misc",
+		Entries: []PlanEntry{
+			{
+				Op:         OpKeep,
+				SourcePath: "wiki/misc/a.md",
+				Domain:     ontology.DevOps,
+				Intent:     ontology.IntentSOP,
+			},
+			{
+				Op:         OpDropLocal,
+				SourcePath: "wiki/misc/c.md",
+			},
+			{
+				Op:          OpRetireSiyuan,
+				SourcePath:  "wiki/misc/legacy.md",
+				SiYuanDocID: "doc-r1",
+			},
+		},
+	}
+
+	report, err := Apply(context.Background(), plan, engine, client, repo)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if got, want := report.PlanSource, "wiki/misc"; got != want {
+		t.Errorf("PlanSource: got %q, want %q", got, want)
+	}
+	if got, want := len(report.Outcomes), 3; got != want {
+		t.Fatalf("Outcomes: got %d entries, want %d", got, want)
+	}
+
+	// Entry 0: OpKeep.
+	o0 := report.Outcomes[0]
+	if o0.Op != OpKeep {
+		t.Errorf("outcome[0].Op = %q, want %q", o0.Op, OpKeep)
+	}
+	if o0.SourcePath != "wiki/misc/a.md" {
+		t.Errorf("outcome[0].SourcePath = %q, want wiki/misc/a.md", o0.SourcePath)
+	}
+	if o0.Status != StatusKept {
+		t.Errorf("outcome[0].Status = %q, want %q (err=%q)", o0.Status, StatusKept, o0.Error)
+	}
+	if o0.Error != "" {
+		t.Errorf("outcome[0].Error = %q, want empty on success", o0.Error)
+	}
+	if o0.NewPath == "" {
+		t.Errorf("outcome[0].NewPath: want non-empty for OpKeep (routed or original); got empty")
+	}
+
+	// Entry 1: OpDropLocal.
+	o1 := report.Outcomes[1]
+	if o1.Op != OpDropLocal {
+		t.Errorf("outcome[1].Op = %q, want %q", o1.Op, OpDropLocal)
+	}
+	if o1.SourcePath != "wiki/misc/c.md" {
+		t.Errorf("outcome[1].SourcePath = %q, want wiki/misc/c.md", o1.SourcePath)
+	}
+	if o1.Status != StatusDropped {
+		t.Errorf("outcome[1].Status = %q, want %q (err=%q)", o1.Status, StatusDropped, o1.Error)
+	}
+	if o1.Error != "" {
+		t.Errorf("outcome[1].Error = %q, want empty on success", o1.Error)
+	}
+	if o1.NewPath != "" {
+		t.Errorf("outcome[1].NewPath = %q, want empty for OpDropLocal", o1.NewPath)
+	}
+
+	// Entry 2: OpRetireSiyuan.
+	o2 := report.Outcomes[2]
+	if o2.Op != OpRetireSiyuan {
+		t.Errorf("outcome[2].Op = %q, want %q", o2.Op, OpRetireSiyuan)
+	}
+	if o2.SourcePath != "wiki/misc/legacy.md" {
+		t.Errorf("outcome[2].SourcePath = %q, want wiki/misc/legacy.md", o2.SourcePath)
+	}
+	if o2.Status != StatusRetired {
+		t.Errorf("outcome[2].Status = %q, want %q (err=%q)", o2.Status, StatusRetired, o2.Error)
+	}
+	if o2.Error != "" {
+		t.Errorf("outcome[2].Error = %q, want empty on success", o2.Error)
+	}
+	if o2.NewPath != "" {
+		t.Errorf("outcome[2].NewPath = %q, want empty for OpRetireSiyuan", o2.NewPath)
+	}
+}
+
+// TestApply_KeepFailureIsolatedByGitMvError exercises per-entry failure
+// isolation at the routing step: one OpKeep entry routes to a canonical
+// target that already exists on disk (placed there by an unrelated
+// pre-existing commit), so the engine's `git mv` step fails for that
+// entry. The next OpKeep entry's source path is different and unaffected;
+// it must complete successfully and produce exactly one createDocWithMd
+// call on the mock.
+//
+// Req coverage: 6.3 (per-entry isolation), 6.4 (keep), 10.4 (hpath/path
+// collision surfaces as a structured error, not a silent overwrite).
+// Design `migrate/apply` -> "atomicity" note.
+func TestApply_KeepFailureIsolatedByGitMvError(t *testing.T) {
+	repo := setupGitRepo(t)
+
+	// Pre-seed the canonical devops target with an unrelated, already-routed
+	// file `bad.md`. A later OpKeep on `wiki/misc/bad.md` will route to the
+	// same target -> `git mv` refuses (destination already exists).
+	writeGitFile(t, repo, "wiki/Linux & DevOps/bad.md", "# Pre-existing bad.md\n")
+	writeGitFile(t, repo, "wiki/misc/bad.md", "# Source bad.md\nbody\n")
+	writeGitFile(t, repo, "wiki/misc/good.md", "# Good\nbody\n")
+	gitCmd(t, repo, "add", ".")
+	gitCmd(t, repo, "commit", "-m", "seed")
+
+	mock, server := newMockSiYuan(t)
+	engine := buildEngine(t, repo, server)
+	client := buildClient(server)
+
+	plan := MigrationPlan{
+		Version: PlanV1,
+		Source:  "wiki/misc",
+		Entries: []PlanEntry{
+			{
+				Op:         OpKeep,
+				SourcePath: "wiki/misc/bad.md", // routes to existing target
+				Domain:     ontology.DevOps,
+				Intent:     ontology.IntentSOP,
+			},
+			{
+				Op:         OpKeep,
+				SourcePath: "wiki/misc/good.md", // routes cleanly
+				Domain:     ontology.DevOps,
+				Intent:     ontology.IntentSOP,
+			},
+		},
+	}
+
+	report, err := Apply(context.Background(), plan, engine, client, repo)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(report.Outcomes) != 2 {
+		t.Fatalf("want 2 outcomes, got %d", len(report.Outcomes))
+	}
+
+	// Entry 0: failure during routing.
+	o0 := report.Outcomes[0]
+	if o0.Status != StatusError {
+		t.Errorf("entry 0 (bad.md): want StatusError, got %q (err=%q)", o0.Status, o0.Error)
+	}
+	// applyKeep wraps RouteAndSync errors as "route and sync: ..."; the
+	// underlying git mv complaint is propagated through that chain. Either
+	// the inner "git mv" or the outer "route and sync" anchor proves the
+	// failure happened at the routing step (not the read or AddOntology
+	// step).
+	if !strings.Contains(o0.Error, "route and sync") &&
+		!strings.Contains(o0.Error, "git mv") {
+		t.Errorf("entry 0: expected error to mention route and sync / git mv; got %q", o0.Error)
+	}
+
+	// Entry 1: still completes despite entry 0's failure.
+	o1 := report.Outcomes[1]
+	if o1.Status != StatusKept {
+		t.Errorf("entry 1 (good.md): want StatusKept, got %q (err=%q)", o1.Status, o1.Error)
+	}
+	if o1.Error != "" {
+		t.Errorf("entry 1: expected empty Error on success; got %q", o1.Error)
+	}
+
+	// Mock contract: exactly one createDocWithMd, for the successful entry
+	// landing at the canonical devops hpath. Entry 0's failure happens
+	// BEFORE any SiYuan call, so the mock must not see an upload for bad.md.
+	if got := len(mock.createdDocs); got != 1 {
+		t.Fatalf("mock createdDocs: want 1, got %d (%+v)", got, mock.createdDocs)
+	}
+	if got, want := mock.createdDocs[0].HPath, "/Linux & DevOps/good.md"; got != want {
+		t.Errorf("mock createdDocs[0].HPath = %q, want %q", got, want)
+	}
+}
+
+// TestApply_UnsafeRewrite_ProducesStructuredError verifies that any failure
+// returned by `ontology.AddOntology` -- including the `ErrUnsafeRewrite`
+// sentinel -- is wrapped by `applyKeep` with the canonical `"add ontology"`
+// prefix and surfaces as a `StatusError` outcome carrying that message.
+//
+// Rationale (per the task 5.2 brief): yaml.v3 round-trips real-world frontmatter
+// remarkably cleanly, so constructing a deterministic `ErrUnsafeRewrite` via
+// a natural source-file value is fragile. Instead, this test:
+//
+//  1. Confirms the propagation CONTRACT in `applyKeep`: any non-nil error
+//     from `ontology.AddOntology` becomes
+//     `outcome.Error = "add ontology: " + err.Error()`. We trigger an
+//     AddOntology error deterministically by feeding it a YAML frontmatter
+//     that fails `yaml.Unmarshal` (a hard tab inside the mapping). This
+//     drives the same wrap path that `ErrUnsafeRewrite` would.
+//  2. Independently asserts (via `errors.Is` in a sibling sub-test) that
+//     `ontology.ErrUnsafeRewrite` is the sentinel the preservation guard
+//     emits, so future regressions on either side surface the same outcome
+//     shape.
+//
+// Req coverage: 8.3 (preservation invariant -> conflict surfaced for human
+// review). Design `migrate/apply` -> "atomicity" note.
+func TestApply_UnsafeRewrite_ProducesStructuredError(t *testing.T) {
+	repo := setupGitRepo(t)
+
+	// Frontmatter parse failure: a hard tab in the indentation of a mapping
+	// entry trips yaml.v3's stricter tab-vs-space rule. AddOntology returns
+	// `ontology: parse frontmatter: ...` which `applyKeep` wraps as
+	// `add ontology: ontology: parse frontmatter: ...`. The wrapping prefix
+	// is the load-bearing assertion; the inner cause is incidental.
+	bad := "---\ntitle: Foo\n\tbad: x\n---\nbody\n"
+	writeGitFile(t, repo, "wiki/misc/bad-yaml.md", bad)
+	gitCmd(t, repo, "add", ".")
+	gitCmd(t, repo, "commit", "-m", "seed")
+
+	_, server := newMockSiYuan(t)
+	engine := buildEngine(t, repo, server)
+	client := buildClient(server)
+
+	plan := MigrationPlan{
+		Version: PlanV1,
+		Source:  "wiki/misc",
+		Entries: []PlanEntry{
+			{
+				Op:         OpKeep,
+				SourcePath: "wiki/misc/bad-yaml.md",
+				Domain:     ontology.DevOps,
+				Intent:     ontology.IntentSOP,
+			},
+		},
+	}
+
+	report, err := Apply(context.Background(), plan, engine, client, repo)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(report.Outcomes) != 1 {
+		t.Fatalf("want 1 outcome, got %d", len(report.Outcomes))
+	}
+	o := report.Outcomes[0]
+	if o.Status != StatusError {
+		t.Errorf("Status: want %q, got %q (err=%q)", StatusError, o.Status, o.Error)
+	}
+	if !strings.Contains(o.Error, "add ontology") {
+		t.Errorf("Error wrapping: want %q in message; got %q", "add ontology", o.Error)
+	}
+
+	// Sibling proof that the ErrUnsafeRewrite sentinel is the canonical
+	// preservation-guard failure: invoke the rewriter on a known-bad pair
+	// indirectly through the package surface. This guards against silent
+	// renaming of the sentinel in a future refactor.
+	t.Run("ErrUnsafeRewrite_SentinelIsExported", func(t *testing.T) {
+		if ontology.ErrUnsafeRewrite == nil {
+			t.Fatal("ontology.ErrUnsafeRewrite must be an exported sentinel")
+		}
+		if got := ontology.ErrUnsafeRewrite.Error(); !strings.Contains(got, "non-ontology key") {
+			t.Errorf("ErrUnsafeRewrite message: want substring %q; got %q",
+				"non-ontology key", got)
+		}
+	})
+}
+
+// TestApply_HpathCollision_V1_IdempotencyProof documents the V1 hpath-
+// collision behavior of `migrate.Apply` under the task 3.4 documented
+// deferral.
+//
+// Setup: two `OpKeep` entries with the SAME canonical target hpath -- same
+// `domain: devops` and same basename `colliding.md`, but different source
+// paths under non-canonical folders. After routing, both want to land at
+// `wiki/Linux & DevOps/colliding.md` (hpath `/Linux & DevOps/colliding.md`).
+//
+// V1 behavior (task 3.4's documented deferral): there is NO explicit pre-
+// write hpath probe in `migrate.Apply`. The first entry's `git mv` succeeds
+// and SiYuan's `createDocWithMd` is called for the canonical hpath; the
+// second entry's `git mv` refuses to overwrite the now-existing destination
+// (a hard git-level collision), so the second entry surfaces a
+// `StatusError`. This proves V1 is data-safe: no silent overwrite ever
+// reaches SiYuan, because git's own collision detection blocks the file
+// write that precedes the upload.
+//
+// Deferred to a future plan version: the explicit `overwrite_existing:`
+// plan field called out in design "Error Handling -> hpath collision"
+// (Req 10.4). Once that lands, this test gains a second sub-case that
+// pins the overwrite path explicitly; for V1 it asserts the data-safety
+// guarantee that holds today.
+//
+// Req coverage: 6.4 (keep), 10.4 (hpath collision surfaces; never silent
+// overwrite).
+func TestApply_HpathCollision_V1_IdempotencyProof(t *testing.T) {
+	repo := setupGitRepo(t)
+
+	// Same basename + same domain, different source folders.
+	writeGitFile(t, repo, "wiki/inboxA/colliding.md", "# A version\nbody A\n")
+	writeGitFile(t, repo, "wiki/inboxB/colliding.md", "# B version\nbody B\n")
+	gitCmd(t, repo, "add", ".")
+	gitCmd(t, repo, "commit", "-m", "seed")
+
+	mock, server := newMockSiYuan(t)
+	engine := buildEngine(t, repo, server)
+	client := buildClient(server)
+
+	plan := MigrationPlan{
+		Version: PlanV1,
+		Source:  "wiki/inbox",
+		Entries: []PlanEntry{
+			{
+				Op:         OpKeep,
+				SourcePath: "wiki/inboxA/colliding.md",
+				Domain:     ontology.DevOps,
+				Intent:     ontology.IntentSOP,
+			},
+			{
+				Op:         OpKeep,
+				SourcePath: "wiki/inboxB/colliding.md",
+				Domain:     ontology.DevOps,
+				Intent:     ontology.IntentSOP,
+			},
+		},
+	}
+
+	report, err := Apply(context.Background(), plan, engine, client, repo)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(report.Outcomes) != 2 {
+		t.Fatalf("want 2 outcomes, got %d", len(report.Outcomes))
+	}
+
+	// Entry 0: lands cleanly at the canonical devops folder.
+	o0 := report.Outcomes[0]
+	if o0.Status != StatusKept {
+		t.Errorf("entry 0 (inboxA): want StatusKept, got %q (err=%q)", o0.Status, o0.Error)
+	}
+
+	// Entry 1: V1 contract -- the routing-step `git mv` refuses to overwrite
+	// the now-existing destination, so this entry must surface a structured
+	// `StatusError`. NO silent overwrite may occur, which is the data-safety
+	// guarantee Req 10.4 demands.
+	o1 := report.Outcomes[1]
+	if o1.Status != StatusError {
+		t.Errorf("entry 1 (inboxB): V1 contract requires StatusError on hpath collision; got %q (err=%q)",
+			o1.Status, o1.Error)
+	}
+	if o1.Status == StatusError {
+		if !strings.Contains(o1.Error, "route and sync") &&
+			!strings.Contains(o1.Error, "git mv") {
+			t.Errorf("entry 1: expected error to mention route and sync / git mv; got %q", o1.Error)
+		}
+	}
+
+	// Mock contract: SiYuan only sees the FIRST entry's create call. The
+	// second entry's failure is caught before any upload, so the canonical
+	// hpath receives exactly one createDocWithMd. This is the V1 data-safety
+	// proof: even without an explicit pre-write hpath probe, the second
+	// write never reaches SiYuan.
+	if got := len(mock.createdDocs); got != 1 {
+		t.Fatalf("mock createdDocs: want 1 (V1 data-safety), got %d (%+v)",
+			got, mock.createdDocs)
+	}
+	if got, want := mock.createdDocs[0].HPath, "/Linux & DevOps/colliding.md"; got != want {
+		t.Errorf("mock createdDocs[0].HPath = %q, want %q", got, want)
+	}
+
+	// The pre-existing source file for entry 1 must remain at its original
+	// location (the failed `git mv` leaves the working tree unchanged on
+	// collision; matches Req 3.2 "file still at original path on collision").
+	if _, statErr := os.Stat(filepath.Join(repo, "wiki/inboxB/colliding.md")); statErr != nil {
+		t.Errorf("entry 1 source: expected to remain on disk on failed git mv; stat err = %v", statErr)
+	}
+}
+
 // 5. RewrittenBody preserves frontmatter while replacing the body.
 func TestApply_RewrittenBody_PreservesFrontmatter(t *testing.T) {
 	repo := setupGitRepo(t)

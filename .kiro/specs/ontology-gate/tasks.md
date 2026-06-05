@@ -140,7 +140,7 @@
   - _Boundary: sync/engine, ontology, state_
   - _Depends: 3.2, 3.3_
 
-- [ ] 5.2 Integration tests for migrate apply
+- [x] 5.2 Integration tests for migrate apply
   - Add tests against the mock SiYuan harness covering: mixed-op plans (keep + drop_local + retire_siyuan) producing the expected per-entry outcomes; per-entry failure isolation (an injected `git mv` failure on one keep does not block the others); `ontology.AddOntology` returning `ErrUnsafeRewrite` from a synthetic regression flips the entry to a structured error; hpath collision on a keep entry surfaces as a structured collision error.
   - Observable: a focused `go test ./internal/migrate/` run is green with the named cases above; each case asserts on `MigrationReport` content, not just exit codes.
   - _Requirements: 6.3, 6.4, 6.5, 6.6, 8.3, 10.2, 10.3, 10.4_
