@@ -3546,3 +3546,412 @@ func TestSync_RouteAndSync_FileNotFound(t *testing.T) {
 		t.Errorf("expected no updateBlock calls on missing file, got %d", len(h.updatedDocs))
 	}
 }
+
+// --- Task 5.1: TestOntologyGate umbrella + Req 4.1 Sync()-path guard ---
+//
+// Per-Requirement coverage mapping for ontology-gate task 5.1 (Req 2.6, 3.2,
+// 3.3, 3.5, 3.6, 4.1, 9.2):
+//
+//   - Req 2.6 (batch continues across schema violations)
+//     -> TestSync_SchemaGate_AbortsViolatingFile_BatchContinues
+//        (engine_test.go ~2790-2871, task 3.1)
+//
+//   - Req 3.2 (router emits `git mv` to canonical folder; state moves; new
+//     hpath used for upload)
+//     -> TestSync_OntologyRouting_MovesAndCommits
+//        (engine_test.go ~3003-3071, task 3.2)
+//
+//   - Req 3.3 (the move is auditable via an `ontology-route:` commit, exactly
+//     one such commit per route)
+//     -> TestSync_OntologyRouting_MovesAndCommits (subject-line assertion at
+//        ~3041-3048, task 3.2)
+//
+//   - Req 3.5 (a schema-violating file is never silently routed; gate fires
+//     before any SiYuan write or git mv)
+//     -> TestSync_SchemaGate_AbortsViolatingFile_BatchContinues
+//        (engine_test.go ~2822-2870, task 3.1)
+//
+//   - Req 3.6 (already-canonical path: no git mv, no extra commit)
+//     -> TestSync_OntologyRouting_NoopWhenAlreadyCanonical
+//        (engine_test.go ~3076-3115, task 3.2)
+//
+//   - Req 4.1 (custom-domain / custom-intent SetBlockAttrs reach SiYuan on
+//     successful sync of an opt-in file)
+//     -> TestSync_RouteAndSync_HappyPath asserts this on the RouteAndSync
+//        single-file entry point (engine_test.go ~3319-3391, task 3.3)
+//     -> TestOntologyGate_Sync_AppliesCustomDomainIntentAttrs (added below)
+//        asserts the same on the regular Sync(ctx) batch entry point.
+//
+//   - Req 9.2 (asset reference warning surfaces with the original asset path,
+//     does not block the move)
+//     -> TestSync_OntologyRouting_AssetWarning
+//        (engine_test.go ~3121-3169, task 3.2)
+//
+// State.Move collision (per-file error, not panic): covered by
+// TestSync_OntologyRouting_StateCollision (engine_test.go ~3214-3305,
+// task 3.2). Mirrored under TestOntologyGate_RoutingFlow_FourScenarios as
+// the umbrella's "state_collision_per_file_error" subtest.
+//
+// Container-portability: every test referenced above uses setupGitDir + the
+// mock SiYuan httptest server, with no os.Chmod(p, 0) or filesystem mtime
+// reliance for the routing/gate scenarios. (TestSync_ReportCounts and
+// TestSync_StatePersistedOnError already skip the root-vs-non-root path via
+// `os.Geteuid() == 0`.)
+
+// Req 4.1 on the regular Sync(ctx) batch path: a single opt-in file with
+// valid (domain, intent) and frontmatter tags must end up with both
+// `custom-domain` and `custom-intent` SiYuan block attributes set via
+// SetBlockAttrs, plus the per-tag `custom-<tag>` map. The 3.3 test guards
+// the RouteAndSync single-file entry point; this guards the Sync() batch
+// entry point so a regression on either dispatch surface bites.
+func TestOntologyGate_Sync_AppliesCustomDomainIntentAttrs(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	// Place the file at its canonical folder to keep the focus on the
+	// attrs payload (no routing concerns; that is covered by 3.2 tests).
+	canonical := "wiki/Linux & DevOps/attrs.md"
+	content := "---\ndomain: devops\nintent: sop\ntags: [a, b]\n---\n# Body\n"
+	writeGitFile(t, dir, canonical, content)
+	gitCmd(t, dir, "add", canonical)
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	h, server := newMockSiYuanServer(t)
+	defer server.Close()
+
+	engine, _ := newSyncEngine(t, server, dir, false)
+
+	report, err := engine.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("Sync failed: %v", err)
+	}
+
+	if len(report.Created) != 1 || report.Created[0] != canonical {
+		t.Fatalf("Req 4.1: expected Created=[%q], got %v (errors=%v)",
+			canonical, report.Created, report.Errors)
+	}
+	if len(h.createdDocs) != 1 {
+		t.Fatalf("Req 4.1: expected 1 createDocWithMd, got %d", len(h.createdDocs))
+	}
+	doc := h.createdDocs[0]
+
+	attrs := h.setAttrs[doc.ID]
+	if attrs == nil {
+		t.Fatalf("Req 4.1: expected setBlockAttrs called on Sync() path for doc %s, got %v",
+			doc.ID, h.setAttrs)
+	}
+	if got := attrs["custom-domain"]; got != "devops" {
+		t.Errorf("Req 4.1: expected custom-domain=devops on Sync() path, got %q (all=%v)",
+			got, attrs)
+	}
+	if got := attrs["custom-intent"]; got != "sop" {
+		t.Errorf("Req 4.1: expected custom-intent=sop on Sync() path, got %q (all=%v)",
+			got, attrs)
+	}
+	// The tag attrs and ontology attrs must coexist (no key collision); the
+	// frontmatter `domain`/`intent` keys must NOT leak as raw keys.
+	if _, ok := attrs["custom-a"]; !ok {
+		t.Errorf("Req 4.1: expected custom-a tag attr present alongside ontology attrs, got %v", attrs)
+	}
+	if _, ok := attrs["custom-b"]; !ok {
+		t.Errorf("Req 4.1: expected custom-b tag attr present alongside ontology attrs, got %v", attrs)
+	}
+	if _, leaked := attrs["domain"]; leaked {
+		t.Errorf("Req 4.1: raw frontmatter 'domain' key must not leak into attrs map, got %v", attrs)
+	}
+	if _, leaked := attrs["intent"]; leaked {
+		t.Errorf("Req 4.1: raw frontmatter 'intent' key must not leak into attrs map, got %v", attrs)
+	}
+}
+
+// TestOntologyGate_RoutingFlow_FourScenarios is the umbrella named-set proof
+// the task brief calls out: a single `go test -run TestOntologyGate` selector
+// must surface the four critical scenarios from the 5.1 brief as named
+// subtests. Each subtest is a self-contained replay of the equivalent
+// task-3.1 / task-3.2 scenario so the umbrella selector exercises real assert
+// chains rather than only naming them.
+//
+// Subtests:
+//
+//	schema_violation_aborts_batch_continues
+//	  Mirrors TestSync_SchemaGate_AbortsViolatingFile_BatchContinues — one
+//	  opt-in file with an out-of-enum intent and one valid sibling; only the
+//	  valid sibling reaches SiYuan; the gate emits exactly one Errors entry
+//	  for the violating file. (Req 2.6, 3.5.)
+//
+//	valid_file_routed_with_state_and_commit
+//	  Mirrors TestSync_OntologyRouting_MovesAndCommits — a (devops, sop)
+//	  file at wiki/misc/foo.md is git-mv'd to wiki/Linux & DevOps/foo.md
+//	  with exactly one ontology-route: commit; state tracker reflects the
+//	  new path. (Req 3.2, 3.3.)
+//
+//	canonical_path_noop
+//	  Mirrors TestSync_OntologyRouting_NoopWhenAlreadyCanonical — a file
+//	  already at its canonical folder syncs without git mv or
+//	  ontology-route: commit. (Req 3.6.)
+//
+//	state_collision_per_file_error
+//	  Mirrors TestSync_OntologyRouting_StateCollision — a state.Move
+//	  collision surfaces as a per-file Errors entry (not a panic); the file
+//	  stays on disk at the source; no SiYuan create issued.
+func TestOntologyGate_RoutingFlow_FourScenarios(t *testing.T) {
+	t.Run("schema_violation_aborts_batch_continues", func(t *testing.T) {
+		dir := setupGitDir(t)
+		defer os.RemoveAll(dir)
+
+		writeGitFile(t, dir, "wiki/a.md", "---\ndomain: devops\nintent: braindump\n---\n# Bad\n")
+		writeGitFile(t, dir, "wiki/b.md", "---\ndomain: devops\nintent: sop\n---\n# Good\n")
+		gitCmd(t, dir, "add", "wiki/a.md", "wiki/b.md")
+		gitCmd(t, dir, "commit", "-m", "initial")
+
+		h, server := newMockSiYuanServer(t)
+		defer server.Close()
+
+		engine, _ := newSyncEngine(t, server, dir, false)
+
+		report, err := engine.Sync(context.Background())
+		if err != nil {
+			t.Fatalf("Sync failed: %v", err)
+		}
+
+		// The valid sibling syncs (under its routed canonical path).
+		canonicalB := "wiki/Linux & DevOps/b.md"
+		if len(report.Created) != 1 || report.Created[0] != canonicalB {
+			t.Fatalf("expected Created=[%q] (batch continues past gate), got %v (errors=%v)",
+				canonicalB, report.Created, report.Errors)
+		}
+		// The violating sibling is never created or updated.
+		for _, p := range report.Created {
+			if p == "wiki/a.md" {
+				t.Errorf("schema-violating file must not be Created, got %v", report.Created)
+			}
+		}
+		// The gate emits a JSON-decodable SchemaViolation for the violating file.
+		var gateErrs []types.SyncError
+		for _, e := range report.Errors {
+			if e.File == "wiki/a.md" {
+				gateErrs = append(gateErrs, e)
+			}
+		}
+		if len(gateErrs) != 1 {
+			t.Fatalf("expected exactly 1 gate Errors entry for wiki/a.md, got %d (errors=%v)",
+				len(gateErrs), report.Errors)
+		}
+		var sv schemaViolationJSON
+		if err := json.Unmarshal([]byte(gateErrs[0].Message), &sv); err != nil {
+			t.Fatalf("expected JSON-decodable SchemaViolation, got %q (err=%v)",
+				gateErrs[0].Message, err)
+		}
+		if sv.Key != "intent" || sv.OffendingValue != "braindump" {
+			t.Errorf("unexpected violation payload: %+v", sv)
+		}
+		// The gate fires BEFORE any SiYuan write for the violating file.
+		if len(h.createdDocs) != 1 {
+			t.Fatalf("expected exactly 1 createDocWithMd (for the valid sibling), got %d: %+v",
+				len(h.createdDocs), h.createdDocs)
+		}
+		if h.createdDocs[0].HPath != "/Linux & DevOps/b.md" {
+			t.Errorf("expected createDocWithMd at /Linux & DevOps/b.md, got %q", h.createdDocs[0].HPath)
+		}
+	})
+
+	t.Run("valid_file_routed_with_state_and_commit", func(t *testing.T) {
+		dir := setupGitDir(t)
+		defer os.RemoveAll(dir)
+
+		content := "---\ndomain: devops\nintent: sop\n---\n# Foo\n"
+		writeGitFile(t, dir, "wiki/misc/foo.md", content)
+		gitCmd(t, dir, "add", "wiki/misc/foo.md")
+		gitCmd(t, dir, "commit", "-m", "initial")
+
+		h, server := newMockSiYuanServer(t)
+		defer server.Close()
+
+		engine, _ := newSyncEngine(t, server, dir, false)
+
+		report, err := engine.Sync(context.Background())
+		if err != nil {
+			t.Fatalf("Sync failed: %v", err)
+		}
+
+		canonical := "wiki/Linux & DevOps/foo.md"
+		if len(report.Created) != 1 || report.Created[0] != canonical {
+			t.Fatalf("expected Created=[%q], got %v (errors=%v)",
+				canonical, report.Created, report.Errors)
+		}
+
+		// Exactly one ontology-route: commit recorded in the repo.
+		commits := gitLogGrep(t, dir, "ontology-route:")
+		if len(commits) != 1 {
+			t.Fatalf("expected exactly 1 ontology-route commit, got %d: %v", len(commits), commits)
+		}
+		wantSubject := "ontology-route: wiki/misc/foo.md -> " + canonical
+		if commits[0] != wantSubject {
+			t.Errorf("commit subject mismatch.\n got:  %q\n want: %q", commits[0], wantSubject)
+		}
+
+		// Filesystem reflects the move.
+		if _, err := os.Stat(filepath.Join(dir, canonical)); err != nil {
+			t.Errorf("expected file at canonical path %q, stat err=%v", canonical, err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "wiki/misc/foo.md")); !os.IsNotExist(err) {
+			t.Errorf("expected old path gone, stat err=%v", err)
+		}
+
+		// State tracker reflects the new path.
+		allState := engine.state.All()
+		entry, ok := allState[canonical]
+		if !ok {
+			t.Fatalf("expected state entry at %q, got %v", canonical, allState)
+		}
+		if entry.SiYuanID == "" {
+			t.Errorf("expected non-empty SiYuanID at new path, got %+v", entry)
+		}
+		if _, gone := allState["wiki/misc/foo.md"]; gone {
+			t.Errorf("expected old state key gone, got entries=%v", allState)
+		}
+
+		// SiYuan create call at the routed hpath.
+		if len(h.createdDocs) != 1 {
+			t.Fatalf("expected 1 createDocWithMd, got %d", len(h.createdDocs))
+		}
+		if got := h.createdDocs[0].HPath; got != "/Linux & DevOps/foo.md" {
+			t.Errorf("expected create hpath /Linux & DevOps/foo.md, got %q", got)
+		}
+	})
+
+	t.Run("canonical_path_noop", func(t *testing.T) {
+		dir := setupGitDir(t)
+		defer os.RemoveAll(dir)
+
+		canonical := "wiki/Linux & DevOps/foo.md"
+		content := "---\ndomain: devops\nintent: sop\n---\n# Foo\n"
+		writeGitFile(t, dir, canonical, content)
+		gitCmd(t, dir, "add", canonical)
+		gitCmd(t, dir, "commit", "-m", "initial")
+
+		h, server := newMockSiYuanServer(t)
+		defer server.Close()
+
+		engine, _ := newSyncEngine(t, server, dir, false)
+
+		report, err := engine.Sync(context.Background())
+		if err != nil {
+			t.Fatalf("Sync failed: %v", err)
+		}
+
+		if len(report.Created) != 1 || report.Created[0] != canonical {
+			t.Fatalf("expected Created=[%q], got %v (errors=%v)",
+				canonical, report.Created, report.Errors)
+		}
+
+		// No ontology-route: commit was created.
+		commits := gitLogGrep(t, dir, "ontology-route:")
+		if len(commits) != 0 {
+			t.Errorf("expected 0 ontology-route commits, got %d: %v", len(commits), commits)
+		}
+
+		// File still at the original (canonical) path.
+		if _, err := os.Stat(filepath.Join(dir, canonical)); err != nil {
+			t.Errorf("expected file still at %q, stat err=%v", canonical, err)
+		}
+
+		// Exactly one create at the canonical hpath.
+		if len(h.createdDocs) != 1 {
+			t.Fatalf("expected 1 createDocWithMd, got %d", len(h.createdDocs))
+		}
+	})
+
+	t.Run("state_collision_per_file_error", func(t *testing.T) {
+		dir := setupGitDir(t)
+		defer os.RemoveAll(dir)
+
+		content := "---\ndomain: devops\nintent: sop\n---\n# Foo\n"
+		writeGitFile(t, dir, "wiki/misc/foo.md", content)
+		gitCmd(t, dir, "add", "wiki/misc/foo.md")
+		gitCmd(t, dir, "commit", "-m", "initial")
+
+		// Pre-seed state with a DIFFERENT SiYuanID already tracked at the
+		// canonical target path; the router will probe state.Move and must
+		// surface a per-file collision error rather than panic.
+		tr, err := state.NewStateTracker(dir)
+		if err != nil {
+			t.Fatalf("NewStateTracker: %v", err)
+		}
+		canonical := "wiki/Linux & DevOps/foo.md"
+		tr.Put(types.SyncEntry{
+			LocalPath:  "wiki/misc/foo.md",
+			SiYuanID:   "src-doc-id",
+			NotebookID: "nb-wiki",
+			SyncedAt:   time.Now().Add(-1 * time.Hour),
+		})
+		tr.Put(types.SyncEntry{
+			LocalPath:  canonical,
+			SiYuanID:   "different-target-doc-id",
+			NotebookID: "nb-wiki",
+			SyncedAt:   time.Now().Add(-1 * time.Hour),
+		})
+		if err := tr.Save(); err != nil {
+			t.Fatal(err)
+		}
+
+		h, server := newMockSiYuanServer(t)
+		defer server.Close()
+
+		scanner, err := git.NewGitScanner(dir)
+		if err != nil {
+			t.Fatalf("NewGitScanner: %v", err)
+		}
+		tracker, err := state.NewStateTracker(dir)
+		if err != nil {
+			t.Fatalf("NewStateTracker: %v", err)
+		}
+		ce := compliance.NewComplianceEngine(false)
+		client := siyuan.NewClient(server.URL, "test-token")
+		engine := NewSyncEngine(client, scanner, tracker, ce)
+
+		// The contract: per-file error, never a panic. If processFile started
+		// panicking on collision, this test would crash before the assertions.
+		report, err := engine.Sync(context.Background())
+		if err != nil {
+			t.Fatalf("Sync failed: %v", err)
+		}
+
+		// File not in Created or Updated.
+		for _, p := range report.Created {
+			if p == "wiki/misc/foo.md" || p == canonical {
+				t.Errorf("collision: file must not be Created, got %v", report.Created)
+			}
+		}
+		for _, p := range report.Updated {
+			if p == "wiki/misc/foo.md" || p == canonical {
+				t.Errorf("collision: file must not be Updated, got %v", report.Updated)
+			}
+		}
+
+		// A state-collision error is recorded for the file.
+		found := false
+		for _, e := range report.Errors {
+			if e.File == "wiki/misc/foo.md" && strings.Contains(e.Message, "state collision") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("collision: expected a state-collision error for wiki/misc/foo.md, got errors=%v",
+				report.Errors)
+		}
+
+		// SiYuan never received a create call for the colliding file.
+		for _, d := range h.createdDocs {
+			if d.HPath == "/misc/foo.md" || d.HPath == "/Linux & DevOps/foo.md" {
+				t.Errorf("collision: must not call createDocWithMd, got %+v", d)
+			}
+		}
+
+		// No partial move: source file still on disk at its original path.
+		if _, err := os.Stat(filepath.Join(dir, "wiki/misc/foo.md")); err != nil {
+			t.Errorf("collision: expected file still at wiki/misc/foo.md (no partial move), stat err=%v", err)
+		}
+	})
+}

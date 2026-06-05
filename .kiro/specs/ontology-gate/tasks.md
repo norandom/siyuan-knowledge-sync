@@ -132,7 +132,7 @@
 
 - [ ] 5. Validation
 
-- [ ] 5.1 Integration tests for sync engine gate + routing
+- [x] 5.1 Integration tests for sync engine gate + routing
   - Add focused engine tests covering: schema-violating file aborts but the batch completes; valid file at wrong path is routed (single `ontology-route:` commit, state tracker reflects the new path, asset warnings surface); valid file at canonical path produces no extra commit and no `git mv`; `state.Move` collision surfaces as a per-file error rather than a panic.
   - These are container-portable tests (no chmod/mtime fragility); use the existing mock SiYuan harness.
   - Observable: a focused `go test ./internal/sync/ -run TestOntologyGate` run is green with at least four named cases mapping to the requirements listed below.
