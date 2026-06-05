@@ -1,14 +1,19 @@
 package sync
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"gopkg.in/yaml.v3"
+
 	"siyuan-knowledge-sync/internal/compliance"
 	"siyuan-knowledge-sync/internal/git"
+	"siyuan-knowledge-sync/internal/ontology"
 	"siyuan-knowledge-sync/internal/siyuan"
 	"siyuan-knowledge-sync/internal/state"
 	"siyuan-knowledge-sync/internal/tags"
@@ -78,12 +83,49 @@ func (e *SyncEngine) processFile(ctx context.Context, report *types.SyncReport, 
 		return
 	}
 
-	fixedContent, _, err := e.compliance.AutoFix(tf.Path, content)
+	fixedContent, issues, err := e.compliance.AutoFix(tf.Path, content)
 	if err != nil {
 		report.Errors = append(report.Errors, types.SyncError{
 			File: tf.Path, Message: fmt.Sprintf("compliance: %v", err),
 		})
 		return
+	}
+
+	// Step 1 (Schema gate, Req 2.6 + 3.5 + design "sync/engine (extended)
+	// Step 1"): when the compliance audit has flagged any "schema"-category
+	// issues, we re-derive the structured []ontology.SchemaViolation directly
+	// from the (autofix-output) frontmatter and abort this file BEFORE any
+	// notebook resolve, upload, title, or attrs call. The batch continues with
+	// the next file.
+	//
+	// Opt-in via declaration: the gate fires only when the file declared at
+	// least one of `domain:` / `intent:` in its frontmatter. Files that
+	// predate the ontology (no opt-in) keep their legacy sync behavior; the
+	// `audit` subcommand still surfaces their schema issues. This preserves
+	// every existing 13.x frontmatter test and every plain-markdown test
+	// byte-equal.
+	if hasSchemaCategoryIssue(issues) {
+		view := parseFrontmatterView(fixedContent)
+		if view.DomainNode != nil || view.IntentNode != nil {
+			violations := ontology.CheckOntologyFrontmatter(tf.Path, view)
+			if len(violations) > 0 {
+				for _, v := range violations {
+					payload, mErr := json.Marshal(v)
+					if mErr != nil {
+						report.Errors = append(report.Errors, types.SyncError{
+							File:    tf.Path,
+							Message: fmt.Sprintf("schema gate: marshal violation: %v", mErr),
+						})
+						continue
+					}
+					report.Errors = append(report.Errors, types.SyncError{
+						File:    tf.Path,
+						Message: string(payload),
+					})
+				}
+				return
+			}
+		}
 	}
 
 	notebookID, err := e.resolveNotebook(ctx, tf.Path)
@@ -350,4 +392,79 @@ func localPathFromSiYuan(notebookName, hpath string) string {
 
 func mergeContent(existing, incoming string) string {
 	return "<<<<<<< local\n" + existing + "\n=======\n" + incoming + "\n>>>>>>> siyuan\n"
+}
+
+// hasSchemaCategoryIssue is the fast path that decides whether the schema
+// gate needs to inspect the frontmatter at all. It scans the compliance
+// audit output for any issue whose Category is "schema" — the marker the
+// audit layer uses for ontology violations (Req 1, Req 2).
+func hasSchemaCategoryIssue(issues []types.ComplianceIssue) bool {
+	for _, i := range issues {
+		if i.Category == "schema" {
+			return true
+		}
+	}
+	return false
+}
+
+// parseFrontmatterView extracts the top-level YAML mapping from a markdown
+// file's frontmatter block and returns the value nodes for the two ontology
+// keys. A nil node means the key was absent. When the content has no
+// frontmatter, both nodes are nil. A YAML parse failure also returns an
+// empty view — CheckOntologyFrontmatter then emits two missing-key
+// violations, which is the correct gate response for malformed YAML that
+// the file's author meant to declare ontology in.
+func parseFrontmatterView(content []byte) ontology.FrontmatterView {
+	fmBytes, ok := extractFrontmatterBytes(content)
+	if !ok {
+		return ontology.FrontmatterView{}
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(fmBytes, &doc); err != nil {
+		return ontology.FrontmatterView{}
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return ontology.FrontmatterView{}
+	}
+	root := doc.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return ontology.FrontmatterView{}
+	}
+	var view ontology.FrontmatterView
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		k := root.Content[i]
+		v := root.Content[i+1]
+		if k.Kind != yaml.ScalarNode {
+			continue
+		}
+		switch k.Value {
+		case "domain":
+			view.DomainNode = v
+		case "intent":
+			view.IntentNode = v
+		}
+	}
+	return view
+}
+
+// extractFrontmatterBytes returns the YAML body between the two `---`
+// fences, excluding the fences themselves. It returns (nil, false) when the
+// content has no recognizable frontmatter block. This mirrors the parsing
+// shape used by the compliance audit so the engine's gate and the audit
+// agree on what counts as "frontmatter".
+func extractFrontmatterBytes(content []byte) ([]byte, bool) {
+	trimmed := bytes.TrimLeft(content, " \t\n")
+	if !bytes.HasPrefix(trimmed, []byte("---")) {
+		return nil, false
+	}
+	afterOpen := trimmed[3:]
+	if len(afterOpen) == 0 || afterOpen[0] != '\n' {
+		return nil, false
+	}
+	afterOpen = afterOpen[1:]
+	closeIdx := bytes.Index(afterOpen, []byte("\n---"))
+	if closeIdx < 0 {
+		return nil, false
+	}
+	return afterOpen[:closeIdx], true
 }

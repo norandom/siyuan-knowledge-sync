@@ -2766,3 +2766,204 @@ func TestSync_UpdatePath_SetsTitleFromFrontmatter(t *testing.T) {
 		t.Errorf("13.1 (update path): updated body still has frontmatter: %q", rec.Markdown)
 	}
 }
+
+// --- Task 3.1: Sync engine schema gate (ontology-gate) ---
+
+// schemaViolationJSON mirrors the on-the-wire shape of
+// ontology.SchemaViolation so engine_test.go can parse Errors[i].Message
+// without coupling to that package's exported type. The fields and JSON
+// tags must stay in lockstep with ontology.SchemaViolation.
+type schemaViolationJSON struct {
+	File           string   `json:"file"`
+	Key            string   `json:"key"`
+	OffendingValue string   `json:"offending_value"`
+	Allowed        []string `json:"allowed"`
+}
+
+// Req 2.6 + Req 3.5 + design "sync/engine (extended) Step 1 (Schema gate)":
+// in a batch where one file opts into the ontology and declares an
+// out-of-enum intent, that file must be aborted with a structured
+// SchemaViolation in report.Errors and absent from report.Created, while
+// the conforming sibling file is created normally. Critically, the mock
+// SiYuan handler must NOT see a createDocWithMd call for the aborted file
+// (the gate fires before any SiYuan API call).
+func TestSync_SchemaGate_AbortsViolatingFile_BatchContinues(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	// a.md opts into the ontology with an out-of-enum intent ("braindump").
+	writeGitFile(t, dir, "wiki/a.md", "---\ndomain: devops\nintent: braindump\n---\n# Bad\n")
+	// b.md opts in with a fully valid (domain, intent) pair.
+	writeGitFile(t, dir, "wiki/b.md", "---\ndomain: devops\nintent: sop\n---\n# Good\n")
+	gitCmd(t, dir, "add", "wiki/a.md", "wiki/b.md")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	h, server := newMockSiYuanServer(t)
+	defer server.Close()
+
+	engine, _ := newSyncEngine(t, server, dir, false)
+
+	report, err := engine.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("Sync failed: %v", err)
+	}
+
+	// b.md is created normally.
+	if len(report.Created) != 1 || report.Created[0] != "wiki/b.md" {
+		t.Fatalf("Req 2.6 batch-continues: expected created=[wiki/b.md], got %v (errors=%v)",
+			report.Created, report.Errors)
+	}
+	// a.md is NEVER in report.Created or report.Updated.
+	for _, p := range report.Created {
+		if p == "wiki/a.md" {
+			t.Errorf("Req 3.5: schema-violating file wiki/a.md must not appear in report.Created, got %v", report.Created)
+		}
+	}
+	for _, p := range report.Updated {
+		if p == "wiki/a.md" {
+			t.Errorf("Req 3.5: schema-violating file wiki/a.md must not appear in report.Updated, got %v", report.Updated)
+		}
+	}
+
+	// Exactly one Errors entry for wiki/a.md, JSON-decodable into a
+	// SchemaViolation that names the offending intent value.
+	gateErrs := make([]types.SyncError, 0)
+	for _, e := range report.Errors {
+		if e.File == "wiki/a.md" {
+			gateErrs = append(gateErrs, e)
+		}
+	}
+	if len(gateErrs) != 1 {
+		t.Fatalf("design Step 1: expected exactly 1 gate Errors entry for wiki/a.md, got %d (all errors=%v)",
+			len(gateErrs), report.Errors)
+	}
+	var sv schemaViolationJSON
+	if err := json.Unmarshal([]byte(gateErrs[0].Message), &sv); err != nil {
+		t.Fatalf("design Step 1: expected JSON-encoded SchemaViolation in Errors[].Message, got %q (err=%v)",
+			gateErrs[0].Message, err)
+	}
+	if sv.Key != "intent" {
+		t.Errorf("expected SchemaViolation.Key='intent', got %q (payload=%+v)", sv.Key, sv)
+	}
+	if sv.OffendingValue != "braindump" {
+		t.Errorf("expected SchemaViolation.OffendingValue='braindump', got %q (payload=%+v)", sv.OffendingValue, sv)
+	}
+	if len(sv.Allowed) == 0 {
+		t.Errorf("expected SchemaViolation.Allowed to enumerate the closed intent enum, got empty (payload=%+v)", sv)
+	}
+
+	// The gate fires BEFORE any upload: the mock saw exactly one createDocWithMd
+	// call, and it was for wiki/b.md (hpath "/b.md"), not wiki/a.md.
+	if len(h.createdDocs) != 1 {
+		t.Fatalf("Req 3.5: gate must abort before SiYuan API; expected exactly 1 createDocWithMd (for b.md), got %d: %+v",
+			len(h.createdDocs), h.createdDocs)
+	}
+	if h.createdDocs[0].HPath != "/b.md" {
+		t.Errorf("Req 3.5: expected the one createDocWithMd to be for /b.md, got hpath %q",
+			h.createdDocs[0].HPath)
+	}
+}
+
+// design Step 1 (cardinality): a file with TWO schema violations (bad
+// domain AND bad intent) must produce TWO Errors entries, each JSON-
+// decodable into a SchemaViolation. This guards against a "collapse all
+// violations into one entry" regression.
+func TestSync_SchemaGate_MultipleViolationsProduceMultipleErrors(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	writeGitFile(t, dir, "wiki/c.md", "---\ndomain: bogus\nintent: braindump\n---\n# Bad\n")
+	gitCmd(t, dir, "add", "wiki/c.md")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	h, server := newMockSiYuanServer(t)
+	defer server.Close()
+
+	engine, _ := newSyncEngine(t, server, dir, false)
+
+	report, err := engine.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("Sync failed: %v", err)
+	}
+
+	if len(report.Created) != 0 {
+		t.Errorf("Req 3.5: schema-violating file must not be created, got %v", report.Created)
+	}
+	if len(h.createdDocs) != 0 {
+		t.Errorf("Req 3.5: gate must abort before any SiYuan API call, got %d createDocWithMd calls",
+			len(h.createdDocs))
+	}
+
+	gateErrs := make([]types.SyncError, 0)
+	for _, e := range report.Errors {
+		if e.File == "wiki/c.md" {
+			gateErrs = append(gateErrs, e)
+		}
+	}
+	if len(gateErrs) != 2 {
+		t.Fatalf("design Step 1 (cardinality): expected 2 SchemaViolation errors for wiki/c.md, got %d (all=%v)",
+			len(gateErrs), report.Errors)
+	}
+
+	seenKeys := make(map[string]string)
+	for i, e := range gateErrs {
+		var sv schemaViolationJSON
+		if err := json.Unmarshal([]byte(e.Message), &sv); err != nil {
+			t.Errorf("gate error #%d: expected JSON-encoded SchemaViolation, got %q (err=%v)",
+				i, e.Message, err)
+			continue
+		}
+		seenKeys[sv.Key] = sv.OffendingValue
+	}
+	if seenKeys["domain"] != "bogus" {
+		t.Errorf("expected a domain violation with OffendingValue='bogus', got map=%v", seenKeys)
+	}
+	if seenKeys["intent"] != "braindump" {
+		t.Errorf("expected an intent violation with OffendingValue='braindump', got map=%v", seenKeys)
+	}
+}
+
+// Opt-in semantics: a legacy file that declares NEITHER `domain:` nor
+// `intent:` must bypass the gate entirely. This is the design's
+// declaration-driven gate: schema issues are still emitted by the
+// compliance audit for the `audit` subcommand, but the sync engine does
+// NOT abort the file. This preserves byte-equal behavior for every
+// existing 13.x frontmatter test (which uses frontmatter without ontology
+// keys) and for every plain-markdown sync test.
+func TestSync_SchemaGate_NonOptInFile_BypassesGate(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	// Frontmatter with neither `domain:` nor `intent:` → not opted in.
+	writeGitFile(t, dir, "wiki/legacy.md", "---\ntitle: Foo\n---\n# Body\n")
+	gitCmd(t, dir, "add", "wiki/legacy.md")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	h, server := newMockSiYuanServer(t)
+	defer server.Close()
+
+	engine, _ := newSyncEngine(t, server, dir, false)
+
+	report, err := engine.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("Sync failed: %v", err)
+	}
+
+	if len(report.Created) != 1 || report.Created[0] != "wiki/legacy.md" {
+		t.Fatalf("opt-in gate: a file with no ontology keys must sync normally, got created=%v errors=%v",
+			report.Created, report.Errors)
+	}
+	if len(h.createdDocs) != 1 {
+		t.Fatalf("opt-in gate: expected exactly 1 createDocWithMd, got %d", len(h.createdDocs))
+	}
+	// No JSON-encoded SchemaViolation should land in report.Errors for this file.
+	for _, e := range report.Errors {
+		if e.File != "wiki/legacy.md" {
+			continue
+		}
+		var sv schemaViolationJSON
+		if err := json.Unmarshal([]byte(e.Message), &sv); err == nil && sv.Key != "" {
+			t.Errorf("opt-in gate: non-opt-in file should not emit SchemaViolation, got %+v", sv)
+		}
+	}
+}
