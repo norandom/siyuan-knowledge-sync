@@ -77,6 +77,12 @@ type ComplianceIssue struct {
 	Severity string // "error", "warning"
 	Message  string
 	Fixable  bool
+	// Category classifies the issue. Empty string is the legacy default
+	// (heading/attribute/asset/tag/TOC issues from the existing audit rules).
+	// "schema" marks an ontology-gate violation (missing required key,
+	// out-of-enum value, or multi-value `domain:`/`intent:`); the sync
+	// engine aborts a file when a "schema"-category issue is present.
+	Category string
 }
 
 // SyncReport summarizes the results of a sync operation.

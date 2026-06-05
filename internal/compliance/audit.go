@@ -5,6 +5,9 @@ import (
 	"regexp"
 	"strings"
 
+	"gopkg.in/yaml.v3"
+
+	"siyuan-knowledge-sync/internal/ontology"
 	"siyuan-knowledge-sync/internal/tags"
 	"siyuan-knowledge-sync/internal/toc"
 	"siyuan-knowledge-sync/internal/types"
@@ -50,8 +53,119 @@ func (e *ComplianceEngine) Audit(filePath string, content []byte) ([]types.Compl
 	issues = append(issues, e.checkAssetRefs(filePath, content)...)
 	issues = append(issues, e.checkTagCompliance(filePath, content)...)
 	issues = append(issues, e.checkTOCCompliance(filePath, content)...)
+	issues = append(issues, e.checkOntologySchema(filePath, content)...)
 
 	return issues, nil
+}
+
+// schemaIssue builds a schema-category compliance issue. Schema violations
+// are file-scoped (Line=0), non-auto-fixable, and error-severity per Req 2.7
+// (auto-fix must never invent ontology values).
+func schemaIssue(file, message string) types.ComplianceIssue {
+	return types.ComplianceIssue{
+		File:     file,
+		Line:     0,
+		Severity: "error",
+		Message:  message,
+		Fixable:  false,
+		Category: "schema",
+	}
+}
+
+// checkOntologySchema produces ComplianceIssues with Category == "schema"
+// for missing-required-key, multi-value, and out-of-enum violations of the
+// `domain:` / `intent:` frontmatter ontology. These issues are gate-eligible:
+// the sync engine aborts a file when any schema-category issue is present.
+//
+// When the file has no frontmatter, both keys are missing → two violations
+// are emitted. When the frontmatter YAML cannot be parsed, a single
+// "frontmatter parse error" violation is emitted (a malformed file is not
+// silently routed).
+func (e *ComplianceEngine) checkOntologySchema(filePath string, content []byte) []types.ComplianceIssue {
+	fmBody, ok := extractFrontmatterYAML(content)
+	if !ok {
+		// No frontmatter at all → both required keys are missing.
+		view := ontology.FrontmatterView{DomainNode: nil, IntentNode: nil}
+		return toComplianceIssues(filePath, ontology.CheckOntologyFrontmatter(filePath, view))
+	}
+
+	var root yaml.Node
+	if err := yaml.Unmarshal(fmBody, &root); err != nil {
+		return []types.ComplianceIssue{
+			schemaIssue(filePath, "frontmatter parse error: "+err.Error()),
+		}
+	}
+
+	domainNode, intentNode := findOntologyNodes(&root)
+	view := ontology.FrontmatterView{DomainNode: domainNode, IntentNode: intentNode}
+	return toComplianceIssues(filePath, ontology.CheckOntologyFrontmatter(filePath, view))
+}
+
+// extractFrontmatterYAML returns the YAML body between the two `---` fences
+// (excluding the fence lines themselves). It returns (nil, false) when the
+// file has no frontmatter block.
+func extractFrontmatterYAML(content []byte) ([]byte, bool) {
+	end := findFrontmatterEnd(content)
+	if end < 0 {
+		return nil, false
+	}
+	// Skip the leading "---\n".
+	lines := bytes.SplitN(content[:end], []byte("\n"), 2)
+	if len(lines) < 2 {
+		return nil, false
+	}
+	body := lines[1]
+	// Trim the trailing "---\n" fence (the last line before end).
+	// Find the last "---" line within body.
+	bodyLines := bytes.Split(body, []byte("\n"))
+	for i := len(bodyLines) - 1; i >= 0; i-- {
+		if strings.TrimSpace(string(bodyLines[i])) == "---" {
+			return bytes.Join(bodyLines[:i], []byte("\n")), true
+		}
+	}
+	return body, true
+}
+
+// findOntologyNodes walks a parsed YAML document root and returns the value
+// nodes for the top-level `domain:` and `intent:` keys. A nil node means the
+// key is absent.
+func findOntologyNodes(root *yaml.Node) (domainNode, intentNode *yaml.Node) {
+	if root == nil || len(root.Content) == 0 {
+		return nil, nil
+	}
+	mapping := root.Content[0]
+	if mapping.Kind != yaml.MappingNode {
+		return nil, nil
+	}
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		k := mapping.Content[i]
+		v := mapping.Content[i+1]
+		if k.Kind != yaml.ScalarNode {
+			continue
+		}
+		switch k.Value {
+		case "domain":
+			domainNode = v
+		case "intent":
+			intentNode = v
+		}
+	}
+	return domainNode, intentNode
+}
+
+// toComplianceIssues converts ontology.SchemaViolation values into the
+// schema-category compliance issues consumed by the engine. The human-
+// readable Message is sourced from SchemaViolation.Error() — which already
+// names the key, the offending value, and lists the allowed values.
+func toComplianceIssues(filePath string, sv []ontology.SchemaViolation) []types.ComplianceIssue {
+	if len(sv) == 0 {
+		return nil
+	}
+	out := make([]types.ComplianceIssue, 0, len(sv))
+	for _, v := range sv {
+		out = append(out, schemaIssue(filePath, v.Error()))
+	}
+	return out
 }
 
 func makeIssue(file string, line int, severity, message string, fixable bool) types.ComplianceIssue {

@@ -74,16 +74,22 @@ More text with a proper [TOC] block.
 	}
 
 	tocIssues := 0
+	schemaIssues := 0
 	for _, iss := range issues {
 		if strings.Contains(iss.Message, "TOC") {
 			tocIssues++
 		}
+		// Schema-category issues are produced by the new ontology-gate rule
+		// (task 2.4) and are not what this test is asserting against.
+		if iss.Category == "schema" {
+			schemaIssues++
+		}
 	}
-	nonTocIssues := len(issues) - tocIssues
-	if nonTocIssues > 0 {
-		t.Errorf("expected no issues for valid content, got %d non-TOC issues", nonTocIssues)
+	nonLegacyIssues := len(issues) - tocIssues - schemaIssues
+	if nonLegacyIssues > 0 {
+		t.Errorf("expected no issues for valid content, got %d non-TOC, non-schema issues", nonLegacyIssues)
 		for _, iss := range issues {
-			if !strings.Contains(iss.Message, "TOC") {
+			if !strings.Contains(iss.Message, "TOC") && iss.Category != "schema" {
 				t.Logf("  unexpected issue: %s", iss.Message)
 			}
 		}
@@ -510,10 +516,22 @@ func TestAutofix_NoModifyWithoutIssues(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(issues) != 0 {
-		t.Errorf("expected no issues for plain-text doc, got %d", len(issues))
+	// Filter out schema-category issues introduced by the ontology-gate rule
+	// (task 2.4). They are non-fixable and orthogonal to this test's intent
+	// (which asserts that AutoFix does not modify content when there are no
+	// legacy fixable issues).
+	legacyIssues := 0
+	for _, iss := range issues {
+		if iss.Category != "schema" {
+			legacyIssues++
+		}
+	}
+	if legacyIssues != 0 {
+		t.Errorf("expected no legacy issues for plain-text doc, got %d", legacyIssues)
 		for _, iss := range issues {
-			t.Logf("  issue: %s", iss.Message)
+			if iss.Category != "schema" {
+				t.Logf("  issue: %s", iss.Message)
+			}
 		}
 	}
 
@@ -784,5 +802,299 @@ Another reference with block="PLACEHOLDER" here.
 	}
 	if bodyRefCount < 2 {
 		t.Errorf("expected at least 2 body-level placeholder references, got %d", bodyRefCount)
+	}
+}
+
+// --- task 2.4: schema-violation rule (Category == "schema") ---
+
+func countByCategory(issues []types.ComplianceIssue, category string) int {
+	n := 0
+	for _, iss := range issues {
+		if iss.Category == category {
+			n++
+		}
+	}
+	return n
+}
+
+func schemaIssuesForKey(issues []types.ComplianceIssue, keyToken string) []types.ComplianceIssue {
+	var out []types.ComplianceIssue
+	for _, iss := range issues {
+		if iss.Category != "schema" {
+			continue
+		}
+		if strings.Contains(iss.Message, keyToken) {
+			out = append(out, iss)
+		}
+	}
+	return out
+}
+
+func TestAudit_Schema_MissingBothKeys_NoFrontmatter(t *testing.T) {
+	content := []byte(`# A note with no frontmatter
+
+Just body text.
+`)
+
+	engine := NewComplianceEngine(false)
+	issues, err := engine.Audit("test.md", content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	schemaCount := countByCategory(issues, "schema")
+	if schemaCount != 2 {
+		t.Fatalf("expected exactly 2 schema-category issues for missing domain+intent, got %d", schemaCount)
+		for _, iss := range issues {
+			if iss.Category == "schema" {
+				t.Logf("  schema issue: %s", iss.Message)
+			}
+		}
+	}
+
+	if len(schemaIssuesForKey(issues, "domain")) == 0 {
+		t.Errorf("expected a schema issue mentioning 'domain'")
+	}
+	if len(schemaIssuesForKey(issues, "intent")) == 0 {
+		t.Errorf("expected a schema issue mentioning 'intent'")
+	}
+
+	for _, iss := range issues {
+		if iss.Category != "schema" {
+			continue
+		}
+		if iss.Severity != "error" {
+			t.Errorf("expected schema issue severity 'error', got %q", iss.Severity)
+		}
+		if iss.Fixable {
+			t.Errorf("expected schema issue Fixable=false, got true")
+		}
+	}
+}
+
+func TestAudit_Schema_MissingDomainOnly(t *testing.T) {
+	content := []byte(`---
+intent: sop
+title: A SOP doc
+---
+
+# Body
+`)
+
+	engine := NewComplianceEngine(false)
+	issues, err := engine.Audit("test.md", content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	schemaCount := countByCategory(issues, "schema")
+	if schemaCount != 1 {
+		t.Fatalf("expected exactly 1 schema-category issue for missing domain, got %d", schemaCount)
+		for _, iss := range issues {
+			if iss.Category == "schema" {
+				t.Logf("  schema issue: %s", iss.Message)
+			}
+		}
+	}
+
+	if len(schemaIssuesForKey(issues, "domain")) != 1 {
+		t.Errorf("expected schema issue to reference key 'domain'")
+	}
+}
+
+func TestAudit_Schema_OutOfEnumIntent(t *testing.T) {
+	content := []byte(`---
+domain: devops
+intent: braindump
+---
+
+# Body
+`)
+
+	engine := NewComplianceEngine(false)
+	issues, err := engine.Audit("test.md", content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	schemaCount := countByCategory(issues, "schema")
+	if schemaCount != 1 {
+		t.Fatalf("expected exactly 1 schema-category issue for out-of-enum intent, got %d", schemaCount)
+		for _, iss := range issues {
+			if iss.Category == "schema" {
+				t.Logf("  schema issue: %s", iss.Message)
+			}
+		}
+	}
+
+	var schemaIss types.ComplianceIssue
+	for _, iss := range issues {
+		if iss.Category == "schema" {
+			schemaIss = iss
+			break
+		}
+	}
+
+	if !strings.Contains(schemaIss.Message, "intent") {
+		t.Errorf("expected schema message to name key 'intent', got %q", schemaIss.Message)
+	}
+	if !strings.Contains(schemaIss.Message, "braindump") {
+		t.Errorf("expected schema message to contain offending value 'braindump', got %q", schemaIss.Message)
+	}
+	for _, allowed := range []string{"config", "sop", "log"} {
+		if !strings.Contains(schemaIss.Message, allowed) {
+			t.Errorf("expected schema message to list allowed value %q, got %q", allowed, schemaIss.Message)
+		}
+	}
+}
+
+func TestAudit_Schema_MultiValueDomain(t *testing.T) {
+	content := []byte(`---
+domain: [devops, forensics]
+intent: sop
+---
+
+# Body
+`)
+
+	engine := NewComplianceEngine(false)
+	issues, err := engine.Audit("test.md", content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	schemaCount := countByCategory(issues, "schema")
+	if schemaCount != 1 {
+		t.Fatalf("expected exactly 1 schema-category issue for multi-value domain, got %d", schemaCount)
+		for _, iss := range issues {
+			if iss.Category == "schema" {
+				t.Logf("  schema issue: %s", iss.Message)
+			}
+		}
+	}
+
+	if len(schemaIssuesForKey(issues, "domain")) != 1 {
+		t.Errorf("expected schema issue to reference key 'domain'")
+	}
+}
+
+func TestAudit_Schema_ValidFrontmatter_NoSchemaIssues(t *testing.T) {
+	content := []byte(`---
+domain: devops
+intent: sop
+title: A clean doc
+---
+
+# Body
+`)
+
+	engine := NewComplianceEngine(false)
+	issues, err := engine.Audit("test.md", content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if c := countByCategory(issues, "schema"); c != 0 {
+		t.Errorf("expected 0 schema-category issues for valid ontology, got %d", c)
+		for _, iss := range issues {
+			if iss.Category == "schema" {
+				t.Logf("  schema issue: %s", iss.Message)
+			}
+		}
+	}
+}
+
+func TestAudit_Schema_FrontmatterParseError(t *testing.T) {
+	content := []byte(`---
+domain: [unclosed
+intent: sop
+---
+
+# Body
+`)
+
+	engine := NewComplianceEngine(false)
+	issues, err := engine.Audit("test.md", content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	schemaCount := countByCategory(issues, "schema")
+	if schemaCount != 1 {
+		t.Fatalf("expected exactly 1 schema-category issue for parse error, got %d", schemaCount)
+		for _, iss := range issues {
+			if iss.Category == "schema" {
+				t.Logf("  schema issue: %s", iss.Message)
+			}
+		}
+	}
+
+	var schemaIss types.ComplianceIssue
+	for _, iss := range issues {
+		if iss.Category == "schema" {
+			schemaIss = iss
+			break
+		}
+	}
+	if !strings.Contains(schemaIss.Message, "parse") {
+		t.Errorf("expected schema message to contain 'parse', got %q", schemaIss.Message)
+	}
+}
+
+func TestAudit_Schema_LegacyIssuesHaveEmptyCategory(t *testing.T) {
+	// Heading-nesting issue (legacy rule).
+	content := []byte(`# Top
+
+### Skipped H2
+`)
+
+	engine := NewComplianceEngine(false)
+	issues, err := engine.Audit("test.md", content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	foundLegacy := false
+	for _, iss := range issues {
+		if strings.Contains(iss.Message, "heading level skipped") {
+			foundLegacy = true
+			if iss.Category != "" {
+				t.Errorf("expected legacy heading issue to have Category=\"\", got %q", iss.Category)
+			}
+		}
+	}
+	if !foundLegacy {
+		t.Fatal("expected to find a legacy heading-nesting issue for the back-compat assertion")
+	}
+}
+
+func TestAudit_Schema_MixedFile_LegacyAndSchemaCoexist(t *testing.T) {
+	// No frontmatter (missing domain+intent) AND a heading-skip issue.
+	content := []byte(`# Top
+
+### Skipped H2
+`)
+
+	engine := NewComplianceEngine(false)
+	issues, err := engine.Audit("test.md", content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	legacyCount := 0
+	schemaCount := 0
+	for _, iss := range issues {
+		if iss.Category == "" {
+			legacyCount++
+		}
+		if iss.Category == "schema" {
+			schemaCount++
+		}
+	}
+	if legacyCount == 0 {
+		t.Errorf("expected at least one legacy (Category==\"\") issue, got 0")
+	}
+	if schemaCount == 0 {
+		t.Errorf("expected at least one schema (Category==\"schema\") issue, got 0")
 	}
 }

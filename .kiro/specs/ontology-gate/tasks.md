@@ -46,7 +46,7 @@
   - _Requirements: 3.2, 3.3_
   - _Boundary: state_
 
-- [ ] 2.4 Compliance audit schema-violation rule
+- [x] 2.4 Compliance audit schema-violation rule
   - Add `checkOntologySchema` to the compliance engine: it consumes a parsed `FrontmatterView` and emits issues with the new `Category: "schema"` for each violation class (missing required key, out-of-enum value, multi-value).
   - Add the `Category` field to the compliance issue type (empty = legacy issue, `"schema"` = gate-eligible).
   - Ensure existing audit rules (heading, attribute, asset, tag, TOC) continue to emit issues with empty `Category` and the existing audit_test suite remains green.
@@ -158,3 +158,4 @@
 ## Implementation Notes
 - 1.2: `tags.Extract` (legacy / compliance audit) and `tags.ExtractMeta` (sync engine) intentionally diverge — only `ExtractMeta` injects `custom-domain` / `custom-intent` into `Meta.Attrs`. The 7.3 drift-guard still holds because its 7 fixtures carry no `domain:`/`intent:`. For task 2.4 the compliance ontology-schema rule must source the raw `yaml.Node` (`Meta.Domain`/`Meta.Intent` are surface-only strings here; node-kind multi-value detection is the validator's job in `internal/ontology/schema`).
 - 2.2: `ontology.AddOntology` returns `ErrUnsafeRewrite` via two layered guards (temporal-fields-first, then general value-bytes). For task 3.4 (migrate apply) treat `ErrUnsafeRewrite` from `AddOntology` as a per-entry structured error and skip rename/attrs for that entry; never overwrite the source file. The rewriter is clock-free in production; the CRLF→LF normalization on inputs is documented.
+- 2.4: `types.ComplianceIssue.Category` is `""` for legacy issues (heading/attribute/asset/tag/TOC) and `"schema"` for ontology-gate violations. For 3.1, the sync engine gate aborts the file iff any issue has `Category == "schema"`. Pre-existing tests `TestAudit_ValidContent_NoIssues` and `TestAutofix_NoModifyWithoutIssues` were extended with a Category-schema filter (parallel to the existing TOC-message filter) — applied this pattern: `len(issues) - tocIssues - schemaIssues > 0`. Schema issues are `Fixable: false` so `AutoFix` never tries to invent ontology values (Req 2.7).
