@@ -3303,3 +3303,246 @@ func TestSync_OntologyRouting_StateCollision(t *testing.T) {
 		t.Errorf("collision: expected file still at wiki/misc/foo.md (no partial move), stat err=%v", err)
 	}
 }
+
+// --- Task 3.3: SyncEngine.RouteAndSync exported entry point (ontology-gate) ---
+
+// Req 4.1 + 6.4 + design "sync/engine (extended) RouteAndSync":
+// the exported single-file entry point must run the schema gate, the
+// pre-sync router, the upload, and the title/attrs application -- the
+// same code path used by Sync()'s processFile. On a happy path:
+//   - it returns nil,
+//   - the file ends at the canonical post-route path on disk and in state,
+//   - the mock SiYuan received a createDocWithMd with the frontmatter-
+//     stripped body at the routed hpath,
+//   - the attrs payload contains custom-domain, custom-intent, and any
+//     tag-derived custom- keys.
+func TestSync_RouteAndSync_HappyPath(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	// Non-canonical wiki/misc/ path with a (devops, sop) ontology and two
+	// frontmatter tags. The router will route to wiki/Linux & DevOps/foo.md.
+	content := "---\ndomain: devops\nintent: sop\ntags: [a, b]\n---\n# Foo\n\nBody.\n"
+	writeGitFile(t, dir, "wiki/misc/foo.md", content)
+	gitCmd(t, dir, "add", "wiki/misc/foo.md")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	h, server := newMockSiYuanServer(t)
+	defer server.Close()
+
+	engine, _ := newSyncEngine(t, server, dir, false)
+
+	if err := engine.RouteAndSync(context.Background(), "wiki/misc/foo.md"); err != nil {
+		t.Fatalf("RouteAndSync returned error: %v", err)
+	}
+
+	canonical := "wiki/Linux & DevOps/foo.md"
+
+	// Filesystem: file moved to canonical path.
+	if _, err := os.Stat(filepath.Join(dir, canonical)); err != nil {
+		t.Errorf("Req 6.4: expected file at canonical path %q, stat err=%v", canonical, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "wiki/misc/foo.md")); !os.IsNotExist(err) {
+		t.Errorf("Req 6.4: expected old path wiki/misc/foo.md to be gone, stat err=%v", err)
+	}
+
+	// Mock SiYuan: exactly one createDocWithMd at the routed hpath, body
+	// stripped of frontmatter.
+	if len(h.createdDocs) != 1 {
+		t.Fatalf("expected exactly 1 createDocWithMd, got %d: %+v", len(h.createdDocs), h.createdDocs)
+	}
+	doc := h.createdDocs[0]
+	if doc.HPath != "/Linux & DevOps/foo.md" {
+		t.Errorf("expected create hpath /Linux & DevOps/foo.md, got %q", doc.HPath)
+	}
+	if strings.Contains(doc.Markdown, "---") {
+		t.Errorf("Req 13.1: uploaded body still contains '---' frontmatter delimiter: %q", doc.Markdown)
+	}
+	if !strings.Contains(doc.Markdown, "# Foo") {
+		t.Errorf("expected uploaded body to contain headings/content, got %q", doc.Markdown)
+	}
+
+	// State: entry at canonical path with the SiYuanID the mock generated.
+	entry, ok := engine.state.All()[canonical]
+	if !ok {
+		t.Fatalf("expected state entry at canonical path %q, state=%v", canonical, engine.state.All())
+	}
+	if entry.SiYuanID != doc.ID {
+		t.Errorf("expected state SiYuanID=%q (from create), got %q", doc.ID, entry.SiYuanID)
+	}
+
+	// Attrs: custom-domain, custom-intent, custom-a, custom-b all set.
+	attrs := h.setAttrs[doc.ID]
+	if attrs == nil {
+		t.Fatalf("Req 4.1: expected setBlockAttrs called for doc %s, got %v", doc.ID, h.setAttrs)
+	}
+	if got := attrs["custom-domain"]; got != "devops" {
+		t.Errorf("Req 4.1: expected custom-domain=devops, got %q (all=%v)", got, attrs)
+	}
+	if got := attrs["custom-intent"]; got != "sop" {
+		t.Errorf("Req 4.1: expected custom-intent=sop, got %q (all=%v)", got, attrs)
+	}
+	if _, ok := attrs["custom-a"]; !ok {
+		t.Errorf("Req 4.1: expected custom-a tag attr, got %v", attrs)
+	}
+	if _, ok := attrs["custom-b"]; !ok {
+		t.Errorf("Req 4.1: expected custom-b tag attr, got %v", attrs)
+	}
+}
+
+// Req 6.4 + design RouteAndSync: a schema violation aborts the file --
+// no upload, no state entry, error returned with a JSON-decodable
+// SchemaViolation payload (inherited from the schema gate, Req 2.6).
+func TestSync_RouteAndSync_SchemaViolationReturnsError(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	// Out-of-enum intent (`braindump`): gate aborts the file before upload.
+	content := "---\ndomain: devops\nintent: braindump\n---\n# Bad\n"
+	writeGitFile(t, dir, "wiki/misc/bad.md", content)
+	gitCmd(t, dir, "add", "wiki/misc/bad.md")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	h, server := newMockSiYuanServer(t)
+	defer server.Close()
+
+	engine, _ := newSyncEngine(t, server, dir, false)
+
+	err := engine.RouteAndSync(context.Background(), "wiki/misc/bad.md")
+	if err == nil {
+		t.Fatalf("Req 6.4: expected RouteAndSync to return an error for a schema-violating file")
+	}
+	if !strings.Contains(err.Error(), "wiki/misc/bad.md") {
+		t.Errorf("expected error to mention the file path, got %q", err.Error())
+	}
+
+	// The error must carry a JSON-decodable SchemaViolation payload, same
+	// shape the gate emits inside Sync().
+	var sv schemaViolationJSON
+	// The error message contains the file prefix; find the JSON object.
+	msg := err.Error()
+	if idx := strings.Index(msg, "{"); idx >= 0 {
+		// Try to decode from the first '{' to find the SchemaViolation.
+		// errors.Join concatenates each "<file>: <message>" via newlines,
+		// where <message> here is the JSON payload itself.
+		tail := msg[idx:]
+		if end := strings.Index(tail, "\n"); end >= 0 {
+			tail = tail[:end]
+		}
+		if jerr := json.Unmarshal([]byte(tail), &sv); jerr != nil {
+			t.Errorf("expected JSON-decodable SchemaViolation in error msg, got %q (json err=%v)", tail, jerr)
+		}
+	} else {
+		t.Errorf("expected '{' in error msg (SchemaViolation payload), got %q", msg)
+	}
+	if sv.Key != "intent" {
+		t.Errorf("expected SchemaViolation.Key='intent', got %q (payload=%+v)", sv.Key, sv)
+	}
+	if sv.OffendingValue != "braindump" {
+		t.Errorf("expected OffendingValue='braindump', got %q", sv.OffendingValue)
+	}
+
+	// No SiYuan API call.
+	if len(h.createdDocs) != 0 {
+		t.Errorf("Req 2.6: gate must abort before any createDocWithMd, got %d", len(h.createdDocs))
+	}
+
+	// No state entry at either the source or the (would-be) target path.
+	allState := engine.state.All()
+	if _, ok := allState["wiki/misc/bad.md"]; ok {
+		t.Errorf("expected NO state entry at source path on schema violation, got %v", allState)
+	}
+	if _, ok := allState["wiki/Linux & DevOps/bad.md"]; ok {
+		t.Errorf("expected NO state entry at target path on schema violation, got %v", allState)
+	}
+}
+
+// Req 4.1 + design RouteAndSync non-fatal semantics: a RenameDocByID
+// failure is recorded as an error but the file is still uploaded and
+// the state entry IS populated -- mirroring the Sync()/processFile
+// title-failure policy inherited from siyuan-knowledge-sync Req 13.2.
+// Callers can distinguish "synced with warnings" from "rejected" by
+// checking state.Get(path) after a non-nil return.
+func TestSync_RouteAndSync_TitleFailure_StillInState(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	// Place at canonical path so no routing happens; the focus is the
+	// title-failure path, not routing.
+	canonical := "wiki/Linux & DevOps/x.md"
+	content := "---\ndomain: devops\nintent: sop\ntitle: My Title\n---\n# Body\n"
+	writeGitFile(t, dir, canonical, content)
+	gitCmd(t, dir, "add", canonical)
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	h, server := newMockSiYuanServer(t)
+	defer server.Close()
+	// Force the mock to return an API error from renameDocByID.
+	h.renameErr = true
+
+	engine, _ := newSyncEngine(t, server, dir, false)
+
+	err := engine.RouteAndSync(context.Background(), canonical)
+	if err == nil {
+		t.Fatalf("expected RouteAndSync to surface the rename error, got nil")
+	}
+	if !strings.Contains(err.Error(), "set document title") && !strings.Contains(err.Error(), "rename") {
+		t.Errorf("expected error to mention title/rename failure, got %q", err.Error())
+	}
+
+	// The mock DID receive a createDocWithMd call -- the body was uploaded.
+	if len(h.createdDocs) != 1 {
+		t.Fatalf("Req 13.2 non-fatal: title failure must not block upload, got %d createDocWithMd calls",
+			len(h.createdDocs))
+	}
+	doc := h.createdDocs[0]
+
+	// State IS populated: callers that need to distinguish
+	// "synced with warnings" from "rejected" check state membership.
+	entry, ok := engine.state.All()[canonical]
+	if !ok {
+		t.Fatalf("Req 13.2 non-fatal: expected state entry at %q despite title error, state=%v",
+			canonical, engine.state.All())
+	}
+	if entry.SiYuanID != doc.ID {
+		t.Errorf("expected state SiYuanID=%q, got %q", doc.ID, entry.SiYuanID)
+	}
+}
+
+// Req 6.4 + design RouteAndSync: a path that does not exist returns a
+// "stat" error mentioning the path, and triggers no SiYuan API calls.
+// This is the guard for the migrate apply executor, which dispatches by
+// path -- a typo or stale path must surface clearly.
+func TestSync_RouteAndSync_FileNotFound(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	// Create the git repo but never write the target file.
+	writeGitFile(t, dir, "placeholder.md", "# placeholder\n")
+	gitCmd(t, dir, "add", "placeholder.md")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	h, server := newMockSiYuanServer(t)
+	defer server.Close()
+
+	engine, _ := newSyncEngine(t, server, dir, false)
+
+	err := engine.RouteAndSync(context.Background(), "nonexistent.md")
+	if err == nil {
+		t.Fatal("expected RouteAndSync to return a non-nil error for a missing path")
+	}
+	if !strings.Contains(err.Error(), "stat") {
+		t.Errorf("expected 'stat' in error message, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "nonexistent.md") {
+		t.Errorf("expected the path in error message, got %q", err.Error())
+	}
+
+	// No SiYuan API calls.
+	if len(h.createdDocs) != 0 {
+		t.Errorf("expected no createDocWithMd calls on missing file, got %d", len(h.createdDocs))
+	}
+	if len(h.updatedDocs) != 0 {
+		t.Errorf("expected no updateBlock calls on missing file, got %d", len(h.updatedDocs))
+	}
+}

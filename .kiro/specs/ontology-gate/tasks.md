@@ -82,7 +82,7 @@
   - _Boundary: sync/engine_
   - _Depends: 2.1, 2.3, 3.1_
 
-- [ ] 3.3 SyncEngine.RouteAndSync exported entry point
+- [x] 3.3 SyncEngine.RouteAndSync exported entry point
   - Expose `SyncEngine.RouteAndSync(ctx, path)` that runs the schema gate, the router, the upload, and the attr-apply for a single file — the same code path 3.1+3.2 use inside `processFile`, exposed for the migrate apply executor.
   - Document the non-fatal semantics inherited from siyuan-knowledge-sync Req 13 (title/attr failures recorded but non-fatal; create/update failure is fatal-for-that-file).
   - Observable: a focused unit test calls `RouteAndSync` directly on a single-file fixture (no batch) and asserts the file ends at the canonical path, the SiYuan mock receives the create call with the frontmatter-stripped body, and `custom-domain`/`custom-intent` arrive in the attrs payload.

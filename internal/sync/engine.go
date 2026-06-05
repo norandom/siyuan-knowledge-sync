@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -291,6 +292,53 @@ func (e *SyncEngine) processFile(ctx context.Context, report *types.SyncReport, 
 			})
 		}
 	}
+}
+
+// RouteAndSync runs the schema gate, the pre-sync router, the upload,
+// and the title/attrs application for a single file -- the same code
+// path Sync() uses inside processFile, exposed for the migrate apply
+// executor (Req 6.4, design "sync/engine (extended) RouteAndSync").
+//
+// State is saved on success. Returns nil when the file was processed
+// without any per-file errors.
+//
+// Non-fatal semantics (inherited from siyuan-knowledge-sync Req 13):
+//   - Title (RenameDocByID) and attrs (SetBlockAttrs) failures DO produce
+//     an error here, but the file IS already in state.Created/Updated.
+//     Callers that need to distinguish "synced but with warnings" from
+//     "rejected" can check e.state.Get(path) after a non-nil return.
+//   - Create/Update API failures, schema violations, and routing
+//     collisions DO NOT advance state and are fatal-for-that-file.
+func (e *SyncEngine) RouteAndSync(ctx context.Context, path string) error {
+	fullPath := filepath.Join(e.repoPath, path)
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		return fmt.Errorf("route-and-sync: stat %s: %w", path, err)
+	}
+
+	tf := types.TrackedFile{Path: path, ModTime: info.ModTime()}
+
+	entry, hasState := e.state.Get(path)
+	var existingSiYuanID string
+	if hasState && entry != nil {
+		existingSiYuanID = entry.SiYuanID
+	}
+
+	report := &types.SyncReport{}
+	e.processFile(ctx, report, tf, existingSiYuanID, !hasState)
+
+	if err := e.state.Save(); err != nil {
+		return fmt.Errorf("route-and-sync: save state: %w", err)
+	}
+
+	if len(report.Errors) == 0 {
+		return nil
+	}
+	errs := make([]error, 0, len(report.Errors))
+	for _, se := range report.Errors {
+		errs = append(errs, fmt.Errorf("%s: %s", se.File, se.Message))
+	}
+	return errors.Join(errs...)
 }
 
 func (e *SyncEngine) resolveNotebook(ctx context.Context, filePath string) (string, error) {
