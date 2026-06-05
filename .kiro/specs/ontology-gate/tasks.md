@@ -21,7 +21,7 @@
 
 - [ ] 2. Core building blocks
 
-- [ ] 2.1 (P) Canonical-folder router and asset reference scan
+- [x] 2.1 (P) Canonical-folder router and asset reference scan
   - Implement `Router.CanonicalFolder` mapping each `Domain` constant to its canonical wiki folder (final names from design Section "Components and Interfaces"; `quant-finance` resolves to its folder even though empty).
   - Implement `Router.Route(domain, localPath, body)` returning `RouteNoop` when the local path already matches and `RouteMove` with the canonical target otherwise.
   - Scan the body for relative asset references (markdown image/link patterns) and return per-reference warnings (original path, new resolved path, target-exists flag) regardless of action.
