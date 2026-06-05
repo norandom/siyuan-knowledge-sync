@@ -55,7 +55,7 @@
   - _Boundary: compliance_
   - _Depends: 1.1, 1.2_
 
-- [ ] 2.5 (P) Migration plan JSON contract
+- [x] 2.5 (P) Migration plan JSON contract
   - Define the versioned `MigrationPlan` type (V1) with fields `Version`, `Source`, `GeneratedAt`, `Entries`.
   - Define `PlanEntry` with `Op` discriminator (`keep`, `drop_local`, `retire_siyuan`), `SourcePath`, `Domain`, `Intent`, `RewrittenBody`, `SiYuanDocID`, `Notes`.
   - Implement `plan.Validate()` rejecting unknown ops, unknown versions, and per-op missing required fields (keep needs Domain+Intent; retire_siyuan needs SiYuanDocID).
