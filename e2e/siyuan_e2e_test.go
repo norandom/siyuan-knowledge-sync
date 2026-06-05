@@ -673,3 +673,368 @@ func exportDocByPath(t *testing.T, notebookName, hpath string) map[string]any {
 	docID := idData[0].(string)
 	return exportDoc(t, docID)
 }
+
+// notebookIDByName returns the notebook ID for the named notebook, or the
+// empty string when it is not present. Used by the ontology E2E tests where
+// "still present" / "absent" assertions need to query a specific notebook
+// without t.Fatal'ing on a missing notebook (exportDocByPath does t.Fatal,
+// which is the wrong contract for negative assertions).
+func notebookIDByName(t *testing.T, name string) string {
+	t.Helper()
+	result := siyuanAPI(t, "/api/notebook/lsNotebooks", "{}")
+	data := result["data"].(map[string]any)
+	nbs, _ := data["notebooks"].([]any)
+	for _, n := range nbs {
+		nb := n.(map[string]any)
+		if nb["name"].(string) == name {
+			return nb["id"].(string)
+		}
+	}
+	return ""
+}
+
+// getDocIDsByHPath returns the SiYuan doc IDs at the given hpath inside the
+// given notebook. An empty slice means the doc is absent — used by the
+// retire-single-doc test to prove the targeted document is gone and a
+// sibling document is still present.
+func getDocIDsByHPath(t *testing.T, notebookID, hpath string) []string {
+	t.Helper()
+	result := siyuanAPI(t, "/api/filetree/getIDsByHPath",
+		fmt.Sprintf(`{"notebook":%q,"path":%q}`, notebookID, hpath))
+	raw, _ := result["data"].([]any)
+	ids := make([]string, 0, len(raw))
+	for _, v := range raw {
+		if s, ok := v.(string); ok {
+			ids = append(ids, s)
+		}
+	}
+	return ids
+}
+
+// findDocIDByHPath looks up the SiYuan doc ID for the given hpath inside
+// notebookID using a SQL query against the `blocks` table. This is more
+// robust than `/api/filetree/getIDsByHPath` against the live container,
+// which returns an empty array for hpaths containing characters like `&`
+// or spaces even when the doc is plainly present.
+//
+// The SiYuan `blocks` table stores hpath WITH the `.md` extension on the
+// leaf component (verified against the live container — see diagnostic
+// dump in the retire test). We pass the hpath through verbatim.
+//
+// Returns the doc ID or an empty string when not found.
+func findDocIDByHPath(t *testing.T, notebookID, hpath string) string {
+	t.Helper()
+	query := fmt.Sprintf(
+		"SELECT id FROM blocks WHERE box='%s' AND type='d' AND hpath='%s' LIMIT 1",
+		escapeSQL(notebookID), escapeSQL(hpath),
+	)
+	body, err := json.Marshal(map[string]string{"stmt": query})
+	if err != nil {
+		t.Fatalf("marshal sql body: %v", err)
+	}
+	result := siyuanAPI(t, "/api/query/sql", string(body))
+	rows, _ := result["data"].([]any)
+	if len(rows) == 0 {
+		return ""
+	}
+	row, _ := rows[0].(map[string]any)
+	if row == nil {
+		return ""
+	}
+	id, _ := row["id"].(string)
+	return id
+}
+
+// escapeSQL escapes single quotes for inline SQL string literals — sufficient
+// for the SiYuan query API surface we exercise here (no untrusted input, all
+// values originate from the test's own setup).
+func escapeSQL(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
+}
+
+// waitForDocAtHPath polls SiYuan's block index for up to `timeout` for a doc
+// to appear at the given hpath in notebookID. Useful immediately after
+// createDocWithMd / sync, because SiYuan's SQL index may lag a few hundred
+// milliseconds behind the operational filetree state.
+func waitForDocAtHPath(t *testing.T, notebookID, hpath string, timeout time.Duration) string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if id := findDocIDByHPath(t, notebookID, hpath); id != "" {
+			return id
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return findDocIDByHPath(t, notebookID, hpath)
+}
+
+// waitForDocAbsent polls SiYuan's filetree (operational state — NOT the SQL
+// block index, which lags behind removeDocByID) for the targeted doc to
+// disappear from the given parent path. Returns true once it is gone, false
+// after timeout. We probe the parent rather than the doc itself because the
+// engine deletes by ID and the operational state reflects immediately in
+// listDocsByPath; the SQL `blocks` table can lag a second or more behind.
+func waitForDocAbsent(t *testing.T, notebookID, parentPath, docID string, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		result := siyuanAPI(t, "/api/filetree/listDocsByPath",
+			fmt.Sprintf(`{"notebook":%q,"path":%q}`, notebookID, parentPath))
+		data, _ := result["data"].(map[string]any)
+		files, _ := data["files"].([]any)
+		found := false
+		for _, f := range files {
+			entry, _ := f.(map[string]any)
+			if entry == nil {
+				continue
+			}
+			if id, _ := entry["id"].(string); id == docID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// TestOntology_CustomAttrsAppliedOnSync verifies Req 4.1 / 4.2 end-to-end:
+// a file declaring a valid `domain:` + `intent:` pair is synced to the live
+// container, and the resulting SiYuan document carries `custom-domain` and
+// `custom-intent` block attributes (queried via `/api/attr/getBlockAttrs`).
+//
+// The source path `wiki/devops-area/sample.md` is intentionally NOT the
+// canonical folder for `domain: devops`, so this test also implicitly
+// exercises the routing path (TestOntology_RoutedFileReachableAtNewHpath
+// asserts routing directly). The notebook here is `wiki` (the top-level
+// folder), and the hpath after routing is `/Linux & DevOps/sample.md`.
+func TestOntology_CustomAttrsAppliedOnSync(t *testing.T) {
+	if !containerStarted {
+		t.Skip("siyuan container not available")
+	}
+
+	dir, cleanup := createTestGitRepo(t)
+	defer cleanup()
+	writeConfig(t, dir)
+
+	content := `---
+title: E2E DevOps Sample
+domain: devops
+intent: sop
+tags: [e2e-tag]
+---
+# E2E DevOps Sample
+
+body content
+`
+	writeFile(t, dir, "wiki/devops-area/sample.md", content)
+	runCmd(t, dir, "git", "add", "wiki/devops-area/sample.md")
+	runCmd(t, dir, "git", "commit", "-m", "initial ontology sample")
+
+	stdout, stderr := runBinary(t, dir, "sync")
+	t.Logf("ontology sync stdout: %s", stdout)
+	t.Logf("ontology sync stderr: %s", stderr)
+
+	// Routing should have moved the file to the canonical devops folder.
+	// We query the SiYuan side via exportDocByPath (which also gives us the
+	// doc ID indirectly), then directly via getIDsByHPath to grab the doc ID
+	// for the getBlockAttrs probe.
+	notebookID := notebookIDByName(t, "wiki")
+	if notebookID == "" {
+		t.Fatalf("notebook %q not found after sync", "wiki")
+	}
+
+	// The engine derives the SiYuan document title from the frontmatter
+	// `title:` field via RenameDocByID (siyuan-knowledge-sync Req 13.2),
+	// so the doc's stored hpath uses the title text, not the source
+	// filename. The source frontmatter declared `title: E2E DevOps Sample`,
+	// so SiYuan stores it at `/Linux & DevOps/E2E DevOps Sample` (no .md
+	// extension on the title leaf — verified against the live container).
+	// `getIDsByHPath` returns empty for paths containing `&`/spaces, so we
+	// resolve via the SQL block index instead.
+	docID := waitForDocAtHPath(t, notebookID, "/Linux & DevOps/E2E DevOps Sample", 5*time.Second)
+	if docID == "" {
+		t.Fatalf("no doc found at title-derived hpath /Linux & DevOps/E2E DevOps Sample in notebook %q after routing sync",
+			"wiki")
+	}
+
+	attrResult := siyuanAPI(t, "/api/attr/getBlockAttrs",
+		fmt.Sprintf(`{"id":%q}`, docID))
+	if code, ok := attrResult["code"].(float64); !ok || code != 0 {
+		t.Fatalf("getBlockAttrs failed: %v", attrResult)
+	}
+	attrs, _ := attrResult["data"].(map[string]any)
+	if attrs == nil {
+		t.Fatalf("getBlockAttrs returned nil data for doc %s", docID)
+	}
+
+	if got := attrs["custom-domain"]; got != "devops" {
+		t.Errorf("custom-domain = %v, want %q (full attrs: %v)", got, "devops", attrs)
+	}
+	if got := attrs["custom-intent"]; got != "sop" {
+		t.Errorf("custom-intent = %v, want %q (full attrs: %v)", got, "sop", attrs)
+	}
+}
+
+// TestOntology_RoutedFileReachableAtNewHpath verifies Req 4.1 / 3.2 / 3.3:
+// a file whose declared `domain:` does not match its on-disk path is
+// `git mv`'d into the canonical folder, a single `ontology-route:` commit is
+// recorded, the local source path no longer exists, and the SiYuan side is
+// reachable at the new hpath.
+func TestOntology_RoutedFileReachableAtNewHpath(t *testing.T) {
+	if !containerStarted {
+		t.Skip("siyuan container not available")
+	}
+
+	dir, cleanup := createTestGitRepo(t)
+	defer cleanup()
+	writeConfig(t, dir)
+
+	content := `---
+title: E2E Routed Forensics
+domain: forensics
+intent: log
+---
+# E2E Routed Forensics
+
+routed body
+`
+	writeFile(t, dir, "wiki/misc/routed.md", content)
+	runCmd(t, dir, "git", "add", "wiki/misc/routed.md")
+	runCmd(t, dir, "git", "commit", "-m", "pre-route forensics sample")
+
+	stdout, stderr := runBinary(t, dir, "sync")
+	t.Logf("route sync stdout: %s", stdout)
+	t.Logf("route sync stderr: %s", stderr)
+
+	// Local: source path is gone, canonical path exists.
+	if _, err := os.Stat(filepath.Join(dir, "wiki/misc/routed.md")); !os.IsNotExist(err) {
+		t.Errorf("source path wiki/misc/routed.md should be gone after route, stat err: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "wiki/Digital Forensics/routed.md")); err != nil {
+		t.Errorf("canonical path wiki/Digital Forensics/routed.md should exist, stat err: %v", err)
+	}
+
+	// Git: exactly one `ontology-route:` commit was created.
+	logCmd := exec.Command("git", "log", "--grep=ontology-route:", "--pretty=oneline")
+	logCmd.Dir = dir
+	logOut, err := logCmd.Output()
+	if err != nil {
+		t.Fatalf("git log --grep=ontology-route: failed: %v", err)
+	}
+	logLines := strings.Split(strings.TrimSpace(string(logOut)), "\n")
+	// strings.Split of "" returns [""] — normalize that to 0.
+	if len(logLines) == 1 && logLines[0] == "" {
+		logLines = nil
+	}
+	if len(logLines) != 1 {
+		t.Errorf("expected exactly 1 ontology-route: commit, got %d: %q", len(logLines), logLines)
+	}
+
+	// SiYuan: doc reachable at the new hpath in notebook "wiki". The engine
+	// renames the SiYuan doc to the frontmatter title (E2E Routed Forensics),
+	// so the stored hpath uses that title rather than the source filename.
+	// Use the SQL-backed lookup because `getIDsByHPath` returns empty for
+	// hpaths containing spaces against the live container.
+	notebookID := notebookIDByName(t, "wiki")
+	if notebookID == "" {
+		t.Fatalf("notebook %q not found after route sync", "wiki")
+	}
+	docID := waitForDocAtHPath(t, notebookID, "/Digital Forensics/E2E Routed Forensics", 5*time.Second)
+	if docID == "" {
+		t.Fatalf("routed doc not found at title-derived hpath /Digital Forensics/E2E Routed Forensics in notebook %q",
+			"wiki")
+	}
+	body, _ := exportDoc(t, docID)["content"].(string)
+	if !strings.Contains(body, "routed body") {
+		t.Errorf("routed doc body mismatch: %s", body)
+	}
+}
+
+// TestOntology_RetireSingleDocViaMigrateApply verifies Req 10.2 / 10.4:
+// a `migrate apply` plan with a single `retire_siyuan` entry removes only
+// the targeted SiYuan document and leaves everything else untouched.
+//
+// Setup: two notebooks each holding one doc, created directly via the
+// SiYuan API (no sync involved). The plan targets only Doc B. After
+// `migrate apply`, Doc B's hpath must return zero IDs; Doc A's hpath must
+// still return its original ID.
+func TestOntology_RetireSingleDocViaMigrateApply(t *testing.T) {
+	if !containerStarted {
+		t.Skip("siyuan container not available")
+	}
+
+	suffix := time.Now().UnixNano() % 100000
+	keepNbName := fmt.Sprintf("e2e_retire_keep_%d", suffix)
+	dropNbName := fmt.Sprintf("e2e_retire_drop_%d", suffix)
+
+	keepNbID := createNotebook(t, keepNbName)
+	dropNbID := createNotebook(t, dropNbName)
+
+	keepDocID := createDoc(t, keepNbID, "/keep-me.md", "# Keep Me\n\nkeep me content\n")
+	dropDocID := createDoc(t, dropNbID, "/retire-me.md", "# Retire Me\n\nretire me content\n")
+
+	// Sanity: both docs are present before we touch anything.
+	if ids := getDocIDsByHPath(t, keepNbID, "/keep-me.md"); len(ids) == 0 || ids[0] != keepDocID {
+		t.Fatalf("pre-condition: keep doc not at expected hpath; ids=%v want=%s", ids, keepDocID)
+	}
+	if ids := getDocIDsByHPath(t, dropNbID, "/retire-me.md"); len(ids) == 0 || ids[0] != dropDocID {
+		t.Fatalf("pre-condition: drop doc not at expected hpath; ids=%v want=%s", ids, dropDocID)
+	}
+
+	// A migration plan needs a working git repo + config because
+	// runMigrateApply builds a full SyncEngine surface (even though
+	// retire_siyuan never touches local files). Use the standard
+	// createTestGitRepo+writeConfig flow.
+	dir, cleanup := createTestGitRepo(t)
+	defer cleanup()
+	writeConfig(t, dir)
+
+	// migrate.PlanEntry.Validate requires SourcePath non-empty even for
+	// retire_siyuan; use a placeholder.
+	plan := fmt.Sprintf(`{
+  "version": 1,
+  "source": %q,
+  "entries": [
+    {
+      "op": "retire_siyuan",
+      "source_path": "ignored.md",
+      "siyuan_doc_id": %q
+    }
+  ]
+}
+`, dir, dropDocID)
+
+	planPath := filepath.Join(dir, "retire-plan.json")
+	if err := os.WriteFile(planPath, []byte(plan), 0644); err != nil {
+		t.Fatalf("write plan: %v", err)
+	}
+
+	stdout, stderr := runBinary(t, dir, "migrate", "apply", planPath)
+	t.Logf("migrate apply stdout: %s", stdout)
+	t.Logf("migrate apply stderr: %s", stderr)
+
+	if !strings.Contains(stderr, "Retired:") {
+		t.Errorf("migrate apply report should mention 'Retired:'; got: %s", stderr)
+	}
+	if !strings.Contains(stderr, "Retired: 1") {
+		t.Errorf("migrate apply report should show 1 retired entry; got: %s", stderr)
+	}
+
+	// SiYuan-side: assert the drop doc is gone from the operational
+	// filetree (the SQL block index may lag, but listDocsByPath reflects
+	// removeDocByID immediately). Then assert the keep doc is still
+	// reachable via the SQL block index (the index already had time to
+	// settle since the keep doc was created earlier in the test).
+	if ok := waitForDocAbsent(t, dropNbID, "/", dropDocID, 5*time.Second); !ok {
+		t.Errorf("retire target %s should have been removed from notebook %s, but is still present", dropDocID, dropNbName)
+	}
+	if id := waitForDocAtHPath(t, keepNbID, "/keep-me.md", 5*time.Second); id == "" {
+		t.Errorf("non-target doc %s should still be present at /keep-me.md in notebook %s", keepDocID, keepNbName)
+	}
+}

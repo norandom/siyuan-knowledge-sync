@@ -147,7 +147,7 @@
   - _Boundary: migrate/apply, sync/engine_
   - _Depends: 3.4_
 
-- [ ] 5.3 E2E tests against the containerized SiYuan
+- [x] 5.3 E2E tests against the containerized SiYuan
   - Extend the existing `e2e/` package with cases that exercise the new pipeline against the live SiYuan container: a valid `domain:` + `intent:` file is uploaded and its document carries `custom-domain` and `custom-intent` (verified via `getBlockAttrs`); a routed file is reachable at the new hpath after sync; a single `retire_siyuan` plan entry removes only the targeted SiYuan document and nothing else.
   - Reuse the existing Docker harness; honour the existing skip-if-no-Docker guard.
   - Observable: `go test ./e2e/ -run TestOntology` is green against the running container with the three named cases.
