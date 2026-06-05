@@ -574,3 +574,186 @@ func TestExtractMeta_AttrsMatchExtract_DriftGuard(t *testing.T) {
 func bytesContains(b []byte, sub string) bool {
 	return strings.Contains(string(b), sub)
 }
+
+// --- ontology-gate task 1.2: Domain/Intent surfacing + custom-attr injection ---
+
+func TestExtractMeta_DomainAndIntent_BothPresent(t *testing.T) {
+	content := []byte(`---
+title: Doc
+domain: devops
+intent: sop
+tags: [tag1]
+---
+
+# Heading
+`)
+
+	extractor := NewTagExtractor()
+	meta, err := extractor.ExtractMeta(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if meta.Domain != "devops" {
+		t.Errorf("expected Meta.Domain == %q, got %q", "devops", meta.Domain)
+	}
+	if meta.Intent != "sop" {
+		t.Errorf("expected Meta.Intent == %q, got %q", "sop", meta.Intent)
+	}
+	if got, ok := meta.Attrs["custom-domain"]; !ok || got != "devops" {
+		t.Errorf("expected Attrs[custom-domain]=%q, got %q (present=%v)", "devops", got, ok)
+	}
+	if got, ok := meta.Attrs["custom-intent"]; !ok || got != "sop" {
+		t.Errorf("expected Attrs[custom-intent]=%q, got %q (present=%v)", "sop", got, ok)
+	}
+	if _, ok := meta.Attrs["custom-tag1"]; !ok {
+		t.Errorf("expected existing custom-tag1 to still be present, got %v", sortedKeys(meta.Attrs))
+	}
+}
+
+func TestExtractMeta_DomainOnly_NoIntent(t *testing.T) {
+	content := []byte(`---
+domain: devops
+---
+
+# Doc
+`)
+
+	extractor := NewTagExtractor()
+	meta, err := extractor.ExtractMeta(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if meta.Domain != "devops" {
+		t.Errorf("expected Meta.Domain == %q, got %q", "devops", meta.Domain)
+	}
+	if meta.Intent != "" {
+		t.Errorf("expected Meta.Intent == \"\" when intent key absent, got %q", meta.Intent)
+	}
+	if got, ok := meta.Attrs["custom-domain"]; !ok || got != "devops" {
+		t.Errorf("expected Attrs[custom-domain]=%q, got %q (present=%v)", "devops", got, ok)
+	}
+	if _, ok := meta.Attrs["custom-intent"]; ok {
+		t.Errorf("expected Attrs[custom-intent] to be absent when intent key missing, got map=%v", meta.Attrs)
+	}
+}
+
+func TestExtractMeta_NeitherDomainNorIntent_BehaviorPreserved(t *testing.T) {
+	content := []byte(`---
+title: T
+tags: [tag1]
+---
+
+# Doc
+`)
+
+	extractor := NewTagExtractor()
+	meta, err := extractor.ExtractMeta(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if meta.Domain != "" {
+		t.Errorf("expected empty Meta.Domain when absent, got %q", meta.Domain)
+	}
+	if meta.Intent != "" {
+		t.Errorf("expected empty Meta.Intent when absent, got %q", meta.Intent)
+	}
+	if _, ok := meta.Attrs["custom-domain"]; ok {
+		t.Errorf("expected Attrs to omit custom-domain when frontmatter has no domain key, got %v", meta.Attrs)
+	}
+	if _, ok := meta.Attrs["custom-intent"]; ok {
+		t.Errorf("expected Attrs to omit custom-intent when frontmatter has no intent key, got %v", meta.Attrs)
+	}
+	// Existing tag behavior unchanged.
+	expected := map[string]string{"custom-tag1": ""}
+	if !tagsEqual(meta.Attrs, expected) {
+		t.Errorf("expected attrs %v, got %v", expected, meta.Attrs)
+	}
+}
+
+func TestExtractMeta_DomainSequence_NotSurfaced(t *testing.T) {
+	content := []byte(`---
+domain: [devops, forensics]
+intent: sop
+---
+
+# Doc
+`)
+
+	extractor := NewTagExtractor()
+	meta, err := extractor.ExtractMeta(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if meta.Domain != "" {
+		t.Errorf("expected Meta.Domain == \"\" for non-scalar (sequence) domain, got %q", meta.Domain)
+	}
+	if _, ok := meta.Attrs["custom-domain"]; ok {
+		t.Errorf("expected Attrs to omit custom-domain when domain is a sequence, got %v", meta.Attrs)
+	}
+	// intent scalar still surfaces normally.
+	if meta.Intent != "sop" {
+		t.Errorf("expected Meta.Intent == %q, got %q", "sop", meta.Intent)
+	}
+	if got, ok := meta.Attrs["custom-intent"]; !ok || got != "sop" {
+		t.Errorf("expected Attrs[custom-intent]=%q, got %q (present=%v)", "sop", got, ok)
+	}
+}
+
+func TestExtractMeta_ArbitraryIntentScalar_NoEnumCheckInParser(t *testing.T) {
+	content := []byte(`---
+intent: braindump
+---
+
+# Doc
+`)
+
+	extractor := NewTagExtractor()
+	meta, err := extractor.ExtractMeta(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if meta.Intent != "braindump" {
+		t.Errorf("expected Meta.Intent == %q (parser must not enum-validate), got %q", "braindump", meta.Intent)
+	}
+	if got, ok := meta.Attrs["custom-intent"]; !ok || got != "braindump" {
+		t.Errorf("expected Attrs[custom-intent]=%q, got %q (present=%v)", "braindump", got, ok)
+	}
+}
+
+func TestExtract_DoesNotInjectDomainOrIntent_AuditPathUnchanged(t *testing.T) {
+	// Regression: legacy Extract entry point (consumed by internal/compliance/audit.go)
+	// must NOT include custom-domain or custom-intent. Injection is ExtractMeta-only.
+	content := []byte(`---
+domain: devops
+intent: sop
+tags: [foo, bar]
+---
+
+# Doc
+`)
+
+	extractor := NewTagExtractor()
+	result, err := extractor.Extract(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expected := map[string]string{
+		"custom-foo": "",
+		"custom-bar": "",
+	}
+	if !tagsEqual(result, expected) {
+		t.Errorf("Extract leaked domain/intent or other keys.\n  expected: %v\n  got:      %v", expected, result)
+	}
+	if _, ok := result["custom-domain"]; ok {
+		t.Errorf("Extract must NOT include custom-domain (audit path), got %v", result)
+	}
+	if _, ok := result["custom-intent"]; ok {
+		t.Errorf("Extract must NOT include custom-intent (audit path), got %v", result)
+	}
+}

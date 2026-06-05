@@ -11,7 +11,7 @@
   - _Requirements: 1.1, 1.2, 1.4, 1.6, 2.5_
   - _Boundary: ontology/schema_
 
-- [ ] 1.2 (P) Frontmatter parser extension and custom-attr injection
+- [x] 1.2 (P) Frontmatter parser extension and custom-attr injection
   - Extend the existing tag extractor's parsed frontmatter struct with `Domain` and `Intent` scalar fields.
   - Surface them on `Meta` and inject `custom-domain` and `custom-intent` into the existing `Meta.Attrs` map so the already-wired `SetBlockAttrs` call in the sync engine picks them up unchanged.
   - Preserve byte-identical behaviour of the existing `Extract` path used by the compliance audit (rely on the existing drift-guard test).
@@ -156,4 +156,4 @@
   - _Depends: 4.2, 3.4_
 
 ## Implementation Notes
-<!-- kiro-impl appends cross-cutting learnings here during execution. -->
+- 1.2: `tags.Extract` (legacy / compliance audit) and `tags.ExtractMeta` (sync engine) intentionally diverge — only `ExtractMeta` injects `custom-domain` / `custom-intent` into `Meta.Attrs`. The 7.3 drift-guard still holds because its 7 fixtures carry no `domain:`/`intent:`. For task 2.4 the compliance ontology-schema rule must source the raw `yaml.Node` (`Meta.Domain`/`Meta.Intent` are surface-only strings here; node-kind multi-value detection is the validator's job in `internal/ontology/schema`).

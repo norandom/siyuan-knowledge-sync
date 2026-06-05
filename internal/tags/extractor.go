@@ -14,15 +14,19 @@ import (
 var inlineTagRe = regexp.MustCompile(`(?:\A|\s)#([\pL\pN][\pL\pN_-]*)`)
 
 type frontmatterData struct {
-	Title yaml.Node `yaml:"title"`
-	Tags  yaml.Node `yaml:"tags"`
+	Title  yaml.Node `yaml:"title"`
+	Tags   yaml.Node `yaml:"tags"`
+	Domain yaml.Node `yaml:"domain"`
+	Intent yaml.Node `yaml:"intent"`
 }
 
 // Meta is the result of a single-pass frontmatter + tag extraction.
 type Meta struct {
-	Title string            // frontmatter "title" scalar; "" when absent/unparseable
-	Body  []byte            // content with the YAML frontmatter block removed
-	Attrs map[string]string // existing custom-<tag> map (frontmatter + inline)
+	Title  string            // frontmatter "title" scalar; "" when absent/unparseable
+	Body   []byte            // content with the YAML frontmatter block removed
+	Attrs  map[string]string // existing custom-<tag> map (frontmatter + inline)
+	Domain string            // frontmatter "domain" scalar; "" when absent/non-scalar/null
+	Intent string            // frontmatter "intent" scalar; "" when absent/non-scalar/null
 }
 
 type TagExtractor struct {
@@ -36,7 +40,7 @@ func NewTagExtractor() *TagExtractor {
 }
 
 func (e *TagExtractor) Extract(content []byte) (map[string]string, error) {
-	_, _, attrs, err := e.extract(content)
+	_, _, _, _, attrs, err := e.extract(content)
 	if err != nil {
 		return nil, err
 	}
@@ -47,28 +51,45 @@ func (e *TagExtractor) Extract(content []byte) (map[string]string, error) {
 // frontmatter-stripped body, and the custom-<tag> attribute map (identical to
 // what Extract returns for the same input). Malformed frontmatter returns a
 // non-nil error and a zero Meta rather than a partial result.
+//
+// ExtractMeta additionally surfaces the frontmatter "domain" and "intent"
+// scalars on Meta.Domain / Meta.Intent and injects them into Meta.Attrs as
+// "custom-domain" / "custom-intent" so the existing SetBlockAttrs call in the
+// sync engine picks them up unchanged. The legacy Extract entry point used by
+// the compliance audit is intentionally unaffected by this injection.
 func (e *TagExtractor) ExtractMeta(content []byte) (Meta, error) {
-	title, body, attrs, err := e.extract(content)
+	title, body, domain, intent, attrs, err := e.extract(content)
 	if err != nil {
 		return Meta{}, err
 	}
-	return Meta{Title: title, Body: body, Attrs: attrs}, nil
+	if domain != "" {
+		attrs["custom-domain"] = domain
+	}
+	if intent != "" {
+		attrs["custom-intent"] = intent
+	}
+	return Meta{Title: title, Body: body, Attrs: attrs, Domain: domain, Intent: intent}, nil
 }
 
 // extract is the shared single-pass core used by both Extract and ExtractMeta
 // so the custom-<tag> attribute map cannot drift between the two entry points.
-func (e *TagExtractor) extract(content []byte) (title string, body []byte, attrs map[string]string, err error) {
+// It returns the raw domain/intent scalars to ExtractMeta but does NOT inject
+// them into the attribute map itself — Extract's audit-path output must remain
+// tag-only.
+func (e *TagExtractor) extract(content []byte) (title string, body []byte, domain string, intent string, attrs map[string]string, err error) {
 	result := make(map[string]string)
 
 	fmBytes, body := splitFrontmatter(content)
 
 	if fmBytes != nil {
-		parsedTitle, tags, perr := parseFrontmatter(fmBytes)
+		parsed, perr := parseFrontmatter(fmBytes)
 		if perr != nil {
-			return "", nil, nil, perr
+			return "", nil, "", "", nil, perr
 		}
-		title = parsedTitle
-		for _, tag := range tags {
+		title = parsed.title
+		domain = parsed.domain
+		intent = parsed.intent
+		for _, tag := range parsed.tags {
 			tag = normalizeTag(tag)
 			if tag != "" {
 				result["custom-"+tag] = ""
@@ -84,7 +105,7 @@ func (e *TagExtractor) extract(content []byte) (title string, body []byte, attrs
 		}
 	}
 
-	return title, body, result, nil
+	return title, body, domain, intent, result, nil
 }
 
 func splitFrontmatter(content []byte) ([]byte, []byte) {
@@ -119,30 +140,57 @@ func splitFrontmatter(content []byte) ([]byte, []byte) {
 	return fm, body
 }
 
-// parseFrontmatter unmarshals the YAML frontmatter once and returns the title
-// scalar (empty when absent or non-scalar) together with the tag list.
-func parseFrontmatter(fmBytes []byte) (string, []string, error) {
+// parsedFrontmatter is the structured result of the single YAML unmarshal so
+// callers can pull scalars (title/domain/intent) and the tag list without
+// re-parsing.
+type parsedFrontmatter struct {
+	title  string
+	tags   []string
+	domain string
+	intent string
+}
+
+// parseFrontmatter unmarshals the YAML frontmatter once and returns the title,
+// domain, and intent scalars (empty when absent or non-scalar) together with
+// the tag list.
+func parseFrontmatter(fmBytes []byte) (parsedFrontmatter, error) {
 	var fm frontmatterData
 	if err := yaml.Unmarshal(fmBytes, &fm); err != nil {
-		return "", nil, err
+		return parsedFrontmatter{}, err
 	}
 
-	title := ""
-	if !fm.Title.IsZero() && fm.Title.Kind == yaml.ScalarNode {
-		if v := fm.Title.Value; v != "" && v != "null" && v != "~" {
-			title = v
-		}
-	}
+	return parsedFrontmatter{
+		title:  scalarValue(fm.Title),
+		tags:   tagsFromNode(fm.Tags),
+		domain: scalarValue(fm.Domain),
+		intent: scalarValue(fm.Intent),
+	}, nil
+}
 
-	tags := tagsFromNode(fm.Tags)
-	return title, tags, nil
+// scalarValue returns the string value of a yaml.Node only when the node is a
+// non-zero, non-null scalar; otherwise it returns "". This preserves the
+// existing title-extraction semantics and applies the same rule to the new
+// domain/intent fields so non-scalar (sequence/mapping) or null values are
+// surfaced as "" — leaving validation to the schema layer (task 2.4).
+func scalarValue(node yaml.Node) string {
+	if node.IsZero() || node.Kind != yaml.ScalarNode {
+		return ""
+	}
+	v := node.Value
+	if v == "" || v == "null" || v == "~" {
+		return ""
+	}
+	return v
 }
 
 // parseFrontmatterTags is retained for backward compatibility; it delegates to
 // the shared single-pass parser and exposes only the tag list.
 func parseFrontmatterTags(fmBytes []byte) ([]string, error) {
-	_, tags, err := parseFrontmatter(fmBytes)
-	return tags, err
+	parsed, err := parseFrontmatter(fmBytes)
+	if err != nil {
+		return nil, err
+	}
+	return parsed.tags, nil
 }
 
 func tagsFromNode(node yaml.Node) []string {
