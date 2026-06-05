@@ -121,7 +121,7 @@
   - _Boundary: cmd/siyuan-knowledge-sync, migrate/apply_
   - _Depends: 3.4_
 
-- [ ] 4.3 (P) Project-local AI Skill SKILL.md
+- [x] 4.3 (P) Project-local AI Skill SKILL.md
   - Author `.claude/skills/siyuan-ontology/SKILL.md` with a YAML frontmatter block declaring `name`, `description`, and the triggers the user wants the skill to apply on (notes destined for the wiki; migration loops).
   - Body documents: the call to `siyuan-knowledge-sync schema --json` for enums and folder map (no hardcoded enums in the skill); the required frontmatter shape; the structured `SchemaViolation` format and a deterministic self-correction loop; the migration workflow (survey → per-file cobesy rewrite → diff approval → emit MigrationPlan → `migrate apply`).
   - Encode the preservation invariant (Req 8) as a hard constraint passed to cobesy in the per-file invocation template.
