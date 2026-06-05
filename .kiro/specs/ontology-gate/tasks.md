@@ -39,7 +39,7 @@
   - _Requirements: 1.5, 8.1, 8.2, 8.3, 8.4, 8.5_
   - _Boundary: ontology/frontmatter_
 
-- [ ] 2.3 (P) State tracker move semantics
+- [x] 2.3 (P) State tracker move semantics
   - Add `StateTracker.Move(oldPath, newPath)` that renames an entry while preserving `SiYuanID`, `NotebookID`, and `SyncedAt`.
   - Return `ErrCollision` when `newPath` already exists and points at a different `SiYuanID`; tolerate `newPath` pointing at the same `SiYuanID` as a no-op.
   - Observable: a unit test puts an entry at `a.md`, calls `Move("a.md", "wiki/Linux & DevOps/a.md")`, asserts the new key is present, the old key is gone, and `SiYuanID`/`SyncedAt` survived; a second test triggers `ErrCollision` on a conflicting target.

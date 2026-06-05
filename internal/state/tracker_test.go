@@ -2,6 +2,7 @@ package state
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -292,6 +293,179 @@ func TestSave_WritesValidJSON(t *testing.T) {
 	}
 	if e.SiYuanID != "id-a" {
 		t.Errorf("siyuan_id %q, want 'id-a'", e.SiYuanID)
+	}
+}
+
+func TestMove_HappyPath_PreservesIdentityFields(t *testing.T) {
+	tr := newTracker(t)
+	syncedAt := time.Date(2024, 3, 15, 9, 30, 0, 0, time.UTC)
+	tr.Put(types.SyncEntry{
+		LocalPath:  "a.md",
+		SiYuanID:   "20240315093000-abcdef",
+		NotebookID: "nb-devops",
+		SyncedAt:   syncedAt,
+	})
+
+	if err := tr.Move("a.md", "wiki/Linux & DevOps/a.md"); err != nil {
+		t.Fatalf("Move returned unexpected error: %v", err)
+	}
+
+	if _, ok := tr.Get("a.md"); ok {
+		t.Error("expected old key 'a.md' to be gone after Move")
+	}
+
+	got, ok := tr.Get("wiki/Linux & DevOps/a.md")
+	if !ok {
+		t.Fatal("expected new key 'wiki/Linux & DevOps/a.md' to be present after Move")
+	}
+	if got.SiYuanID != "20240315093000-abcdef" {
+		t.Errorf("SiYuanID not preserved: got %q want %q", got.SiYuanID, "20240315093000-abcdef")
+	}
+	if got.NotebookID != "nb-devops" {
+		t.Errorf("NotebookID not preserved: got %q want %q", got.NotebookID, "nb-devops")
+	}
+	if !got.SyncedAt.Equal(syncedAt) {
+		t.Errorf("SyncedAt not preserved: got %v want %v", got.SyncedAt, syncedAt)
+	}
+	if got.LocalPath != "wiki/Linux & DevOps/a.md" {
+		t.Errorf("LocalPath not updated: got %q want %q", got.LocalPath, "wiki/Linux & DevOps/a.md")
+	}
+}
+
+func TestMove_SamePaths_NoOp(t *testing.T) {
+	tr := newTracker(t)
+	syncedAt := time.Date(2024, 4, 1, 10, 0, 0, 0, time.UTC)
+	tr.Put(types.SyncEntry{
+		LocalPath:  "a.md",
+		SiYuanID:   "id-a",
+		NotebookID: "nb-1",
+		SyncedAt:   syncedAt,
+	})
+
+	if err := tr.Move("a.md", "a.md"); err != nil {
+		t.Fatalf("Move(same,same) returned unexpected error: %v", err)
+	}
+
+	got, ok := tr.Get("a.md")
+	if !ok {
+		t.Fatal("entry 'a.md' should still be present after no-op Move")
+	}
+	if got.SiYuanID != "id-a" || got.NotebookID != "nb-1" || !got.SyncedAt.Equal(syncedAt) {
+		t.Errorf("entry mutated unexpectedly: %+v", got)
+	}
+}
+
+func TestMove_NoSourceEntry_NoOp(t *testing.T) {
+	tr := newTracker(t)
+	if err := tr.Move("missing.md", "x.md"); err != nil {
+		t.Fatalf("Move(missing,x) returned unexpected error: %v", err)
+	}
+	if _, ok := tr.Get("missing.md"); ok {
+		t.Error("'missing.md' should not exist")
+	}
+	if _, ok := tr.Get("x.md"); ok {
+		t.Error("'x.md' should not exist (Move from missing source must not synthesize a target)")
+	}
+}
+
+func TestMove_Collision_DifferentSiYuanIDs(t *testing.T) {
+	tr := newTracker(t)
+	aSynced := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	bSynced := time.Date(2024, 2, 1, 12, 0, 0, 0, time.UTC)
+	tr.Put(types.SyncEntry{LocalPath: "a.md", SiYuanID: "id-a", NotebookID: "nb-1", SyncedAt: aSynced})
+	tr.Put(types.SyncEntry{LocalPath: "b.md", SiYuanID: "id-b", NotebookID: "nb-1", SyncedAt: bSynced})
+
+	err := tr.Move("a.md", "b.md")
+	if err == nil {
+		t.Fatal("expected ErrCollision, got nil")
+	}
+	if !errors.Is(err, ErrCollision) {
+		t.Errorf("expected errors.Is(err, ErrCollision) to be true, got err=%v", err)
+	}
+
+	gotA, okA := tr.Get("a.md")
+	if !okA {
+		t.Error("source 'a.md' should still be present after collision")
+	} else if gotA.SiYuanID != "id-a" || !gotA.SyncedAt.Equal(aSynced) {
+		t.Errorf("'a.md' mutated after collision: %+v", gotA)
+	}
+
+	gotB, okB := tr.Get("b.md")
+	if !okB {
+		t.Error("target 'b.md' should still be present after collision")
+	} else if gotB.SiYuanID != "id-b" || !gotB.SyncedAt.Equal(bSynced) {
+		t.Errorf("'b.md' mutated after collision: %+v", gotB)
+	}
+}
+
+func TestMove_IdempotentRetry_SameSiYuanID(t *testing.T) {
+	tr := newTracker(t)
+	aSynced := time.Date(2024, 5, 1, 12, 0, 0, 0, time.UTC)
+	bSynced := time.Date(2024, 5, 2, 12, 0, 0, 0, time.UTC)
+	// Simulates a previously-half-applied move: target already holds the same SiYuanID.
+	tr.Put(types.SyncEntry{LocalPath: "a.md", SiYuanID: "id-a", NotebookID: "nb-1", SyncedAt: aSynced})
+	tr.Put(types.SyncEntry{LocalPath: "b.md", SiYuanID: "id-a", NotebookID: "nb-1", SyncedAt: bSynced})
+
+	if err := tr.Move("a.md", "b.md"); err != nil {
+		t.Fatalf("idempotent retry Move returned unexpected error: %v", err)
+	}
+
+	if _, ok := tr.Get("a.md"); ok {
+		t.Error("'a.md' should be gone after idempotent retry Move")
+	}
+	gotB, ok := tr.Get("b.md")
+	if !ok {
+		t.Fatal("'b.md' should still be present after idempotent retry Move")
+	}
+	if gotB.SiYuanID != "id-a" {
+		t.Errorf("'b.md' SiYuanID changed: got %q want %q", gotB.SiYuanID, "id-a")
+	}
+	if !gotB.SyncedAt.Equal(bSynced) {
+		t.Errorf("'b.md' SyncedAt mutated: got %v want %v (target should be left as-is)", gotB.SyncedAt, bSynced)
+	}
+}
+
+func TestMove_PersistenceRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	tr, err := NewStateTracker(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	syncedAt := time.Date(2024, 6, 1, 8, 0, 0, 0, time.UTC)
+	tr.Put(types.SyncEntry{
+		LocalPath:  "a.md",
+		SiYuanID:   "id-move-rt",
+		NotebookID: "nb-rt",
+		SyncedAt:   syncedAt,
+	})
+
+	if err := tr.Move("a.md", "wiki/Linux & DevOps/a.md"); err != nil {
+		t.Fatalf("Move failed: %v", err)
+	}
+	if err := tr.Save(); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	reloaded, err := NewStateTracker(dir)
+	if err != nil {
+		t.Fatalf("reload failed: %v", err)
+	}
+
+	if _, ok := reloaded.Get("a.md"); ok {
+		t.Error("reloaded state should not contain old key 'a.md'")
+	}
+	got, ok := reloaded.Get("wiki/Linux & DevOps/a.md")
+	if !ok {
+		t.Fatal("reloaded state missing new key 'wiki/Linux & DevOps/a.md'")
+	}
+	if got.SiYuanID != "id-move-rt" {
+		t.Errorf("SiYuanID lost across save/reload: got %q", got.SiYuanID)
+	}
+	if got.NotebookID != "nb-rt" {
+		t.Errorf("NotebookID lost across save/reload: got %q", got.NotebookID)
+	}
+	if !got.SyncedAt.Equal(syncedAt) {
+		t.Errorf("SyncedAt lost across save/reload: got %v want %v", got.SyncedAt, syncedAt)
 	}
 }
 
