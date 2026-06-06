@@ -175,7 +175,14 @@ func (e *SyncEngine) processFile(ctx context.Context, report *types.SyncReport, 
 			if w.TargetExists {
 				// The asset is already at its new resolved location
 				// (pre-migrated by the caller); the move is fine.
-				// Reporting this as an error would mask the real failures.
+				continue
+			}
+			// Skip non-asset refs (markdown cross-links, etc.) — the
+			// upload step uses a binary-extension whitelist, so a
+			// non-asset ref like `[Other](Other.md)` should never
+			// flip an entry to error status just because the router
+			// noticed its resolved path moves.
+			if !isLocalAssetRef(w.Reference) {
 				continue
 			}
 			report.Errors = append(report.Errors, types.SyncError{

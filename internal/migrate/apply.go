@@ -121,17 +121,24 @@ func applyKeep(ctx context.Context, engine *sync.SyncEngine, repoPath string, en
 	content := original
 	if entry.RewrittenBody != "" {
 		// Preserve original frontmatter (if any) and replace the body.
+		// Defensively strip any leading `---...---` block from the
+		// rewritten body — cobesy rewrites are instructed to return BODY
+		// ONLY, but some agent runs leak a frontmatter block back in.
+		// Without this strip, applyKeep would produce a file with TWO
+		// frontmatter blocks (the original + cobesy's leak), confusing
+		// the engine's later Meta extraction and breaking setBlockAttrs.
+		body := stripLeadingFrontmatter([]byte(entry.RewrittenBody))
 		fmBlock := extractFrontmatterBlock(original)
 		if fmBlock != nil {
 			content = append([]byte{}, fmBlock...)
 			if len(content) > 0 && content[len(content)-1] != '\n' {
 				content = append(content, '\n')
 			}
-			content = append(content, []byte(entry.RewrittenBody)...)
+			content = append(content, body...)
 		} else {
 			// No frontmatter on the source: AddOntology will prepend a
 			// fresh block; we just use the rewritten body as the input.
-			content = []byte(entry.RewrittenBody)
+			content = body
 		}
 	}
 
@@ -212,6 +219,33 @@ func applyRetireSiyuan(ctx context.Context, client *siyuan.Client, entry PlanEnt
 		return
 	}
 	outcome.Status = StatusRetired
+}
+
+// stripLeadingFrontmatter defensively removes a leading `---...---`
+// YAML block from body. cobesy rewrites are spec'd to return BODY ONLY,
+// but some agent runs include a frontmatter block; without this strip,
+// applyKeep would produce a file with two frontmatter blocks, breaking
+// downstream tag extraction and setBlockAttrs.
+func stripLeadingFrontmatter(body []byte) []byte {
+	trimmed := bytes.TrimLeft(body, " \t\r\n")
+	if !bytes.HasPrefix(trimmed, []byte("---")) {
+		return body
+	}
+	afterOpen := trimmed[3:]
+	if len(afterOpen) > 0 && afterOpen[0] == '\n' {
+		afterOpen = afterOpen[1:]
+	} else if len(afterOpen) > 1 && afterOpen[0] == '\r' && afterOpen[1] == '\n' {
+		afterOpen = afterOpen[2:]
+	}
+	closeIdx := bytes.Index(afterOpen, []byte("\n---"))
+	if closeIdx < 0 {
+		return body // malformed YAML — leave untouched
+	}
+	rest := afterOpen[closeIdx+4:]
+	if len(rest) > 0 && rest[0] == '\n' {
+		rest = rest[1:]
+	}
+	return rest
 }
 
 // extractFrontmatterBlock returns the entire `---\n…\n---\n` block
