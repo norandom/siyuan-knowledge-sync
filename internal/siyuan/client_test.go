@@ -1038,3 +1038,51 @@ func writeFile(t *testing.T, path string, content []byte) error {
 	t.Helper()
 	return writeTestFile(path, content)
 }
+
+// TestSetBlockAttrs_NormalizesEmptyValueToMarker_BugFix asserts that
+// empty-string attribute values get rewritten to the "1" marker before
+// being sent to SiYuan. SiYuan treats empty values as "delete this
+// attribute" and silently drops them from storage (the API still returns
+// code:0). The tag-marker extraction path produces empty-value attrs by
+// design (presence = tag membership), so without this normalization no
+// tag attrs ever persist server-side. Verified against live SiYuan
+// during the wiki migration on 2026-06-06.
+func TestSetBlockAttrs_NormalizesEmptyValueToMarker_BugFix(t *testing.T) {
+	var cap capturedRequest
+	server := mockServer(t, 0, nil, &cap)
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-token")
+	attrs := map[string]string{
+		"custom-docker":          "",     // empty -> "1"
+		"custom-linux":           "",     // empty -> "1"
+		"custom-domain":          "devops", // non-empty passthrough
+		"custom-intent":          "concept",
+		"custom-supply-chain":    "",     // SiYuan-invalid char already filtered by normalizeTag
+	}
+	if err := client.SetBlockAttrs(context.Background(), "doc-id", attrs); err != nil {
+		t.Fatalf("SetBlockAttrs: %v", err)
+	}
+
+	sent, ok := cap.body["attrs"].(map[string]any)
+	if !ok {
+		t.Fatalf("captured body.attrs is not a map; got %T (%v)", cap.body["attrs"], cap.body["attrs"])
+	}
+	want := map[string]string{
+		"custom-docker":       "1",
+		"custom-linux":        "1",
+		"custom-domain":       "devops",
+		"custom-intent":       "concept",
+		"custom-supply-chain": "1",
+	}
+	for k, expected := range want {
+		got, present := sent[k]
+		if !present {
+			t.Errorf("attrs[%q] missing from sent payload", k)
+			continue
+		}
+		if got != expected {
+			t.Errorf("attrs[%q] sent as %q, want %q", k, got, expected)
+		}
+	}
+}

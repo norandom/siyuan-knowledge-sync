@@ -2691,10 +2691,15 @@ func TestSync_TagAttrs_ExactSetFromFrontmatterAndInline(t *testing.T) {
 	if got == nil {
 		t.Fatalf("13.4: expected setBlockAttrs called for doc %s, got %v", doc.ID, h.setAttrs)
 	}
+	// Tag-marker attrs carry the "1" sentinel since SiYuan silently drops
+	// empty-value attrs from storage; the marker preserves attr presence
+	// for semantic-search-by-tag queries. The normalization happens inside
+	// client.SetBlockAttrs, so the mock handler sees the post-substitution
+	// values.
 	want := map[string]string{
-		"custom-alpha": "",
-		"custom-beta":  "",
-		"custom-gamma": "",
+		"custom-alpha": "1",
+		"custom-beta":  "1",
+		"custom-gamma": "1",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("13.4: attrs sent to setBlockAttrs mismatch.\n got:  %v\n want: %v", got, want)

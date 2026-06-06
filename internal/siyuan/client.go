@@ -285,9 +285,28 @@ func (c *Client) ExportMdContent(ctx context.Context, id string) (*types.ExportR
 }
 
 func (c *Client) SetBlockAttrs(ctx context.Context, id string, attrs map[string]string) error {
+	// SiYuan treats empty-value attrs as "delete this attribute" and
+	// silently drops them from storage — the API still returns code:0 so
+	// the failure is invisible without a follow-up read. Tag-marker attrs
+	// (custom-<tag> with no associated value) need a sentinel non-empty
+	// value to persist. We substitute "1" because attribute *presence*
+	// is what matters for semantic-search-by-tag queries; the value
+	// itself carries no semantic information. Any caller that
+	// deliberately wants to delete an attr via SetBlockAttrs is therefore
+	// blocked by this normalization — no production call site does
+	// (verified: only internal/sync/engine.go:297 calls this, with
+	// extractor-produced attrs whose empty values mean "marker present").
+	normalized := make(map[string]string, len(attrs))
+	for k, v := range attrs {
+		if v == "" {
+			normalized[k] = "1"
+		} else {
+			normalized[k] = v
+		}
+	}
 	return c.doRequest(ctx, "/api/attr/setBlockAttrs", map[string]any{
 		"id":    id,
-		"attrs": attrs,
+		"attrs": normalized,
 	}, nil)
 }
 
