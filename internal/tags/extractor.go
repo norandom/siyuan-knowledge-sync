@@ -268,5 +268,13 @@ func normalizeTag(tag string) string {
 	tag = strings.TrimSpace(tag)
 	tag = strings.ToLower(tag)
 	tag = strings.ReplaceAll(tag, " ", "-")
-	return tag
+	tag = strings.TrimLeft(tag, "#")
+	var b strings.Builder
+	b.Grow(len(tag))
+	for _, r := range tag {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }

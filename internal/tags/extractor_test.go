@@ -757,3 +757,110 @@ tags: [foo, bar]
 		t.Errorf("Extract must NOT include custom-intent (audit path), got %v", result)
 	}
 }
+
+// TestNormalizeTag_StripsHashtagAndInvalidChars_BugFix asserts that
+// normalizeTag produces SiYuan-acceptable attribute name suffixes. SiYuan
+// rejects setBlockAttrs atomically when ANY key contains a character outside
+// [a-zA-Z0-9_-] after the `custom-` prefix; a single rogue key nukes the
+// whole multi-attr call, including the file's `custom-domain` and
+// `custom-intent`. The original siyuan-knowledge-sync Req 13 e2e fixtures
+// used bare tag values (no `#` prefix), so this never tripped until the
+// folder-by-folder wiki migration ran against real frontmatter containing
+// `tags: ['#docker', '#supply-chain', ...]`.
+func TestNormalizeTag_StripsHashtagAndInvalidChars_BugFix(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"hashtag-prefix simple", "#docker", "docker"},
+		{"hashtag-prefix with hyphens", "#supply-chain", "supply-chain"},
+		{"hashtag-prefix with underscore", "#my_tag", "my_tag"},
+		{"multiple leading hashtags", "##weird", "weird"},
+		{"hashtag-only collapses to empty", "#", ""},
+		{"mixed case lowercased", "#MIXED_Case", "mixed_case"},
+		{"spaces become hyphens then hashtag stripped", "#tag with spaces", "tag-with-spaces"},
+		{"embedded hash dropped", "tag#middle", "tagmiddle"},
+		{"punctuation stripped", "tag.with/punct", "tagwithpunct"},
+		{"colon stripped", "ns:tag", "nstag"},
+		{"plus stripped", "c++", "c"},
+		{"already valid passthrough", "my-tag_123", "my-tag_123"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := normalizeTag(tc.in)
+			if got != tc.want {
+				t.Errorf("normalizeTag(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestExtractMeta_HashtagFrontmatterTags_ProducesValidAttrKeys is the
+// integration-level guard: the wiki migration's real input shape
+// (YAML tags as quoted hashtag strings) MUST round-trip through ExtractMeta
+// into attr keys that SiYuan accepts. Captures the exact frontmatter shape
+// from `wiki/Linux & DevOps/Docker explained and illustrated.md`.
+func TestExtractMeta_HashtagFrontmatterTags_ProducesValidAttrKeys(t *testing.T) {
+	content := []byte(`---
+last_updated: '2024-01-28T07:14:56.539000+00:00'
+tags:
+  - '#docker'
+  - '#linux'
+  - '#containers'
+  - '#software-composition-analysis'
+  - '#supply-chain'
+  - '#secrets-management'
+  - '#least-privilege'
+  - '#application-security'
+domain: devops
+intent: concept
+---
+
+# Body
+`)
+
+	extractor := NewTagExtractor()
+	meta, err := extractor.ExtractMeta(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := map[string]string{
+		"custom-docker":                        "",
+		"custom-linux":                         "",
+		"custom-containers":                    "",
+		"custom-software-composition-analysis": "",
+		"custom-supply-chain":                  "",
+		"custom-secrets-management":            "",
+		"custom-least-privilege":               "",
+		"custom-application-security":          "",
+		"custom-domain":                        "devops",
+		"custom-intent":                        "concept",
+	}
+	if !tagsEqual(meta.Attrs, want) {
+		t.Errorf("attrs mismatch\n  got:  %v\n  want: %v", meta.Attrs, want)
+	}
+
+	// Belt-and-braces: every key must be SiYuan-acceptable: `custom-` prefix
+	// + [a-z0-9_-]+ suffix. A single rogue key would atomically nuke the
+	// whole setBlockAttrs call on the real SiYuan API.
+	const prefix = "custom-"
+	for k := range meta.Attrs {
+		if !strings.HasPrefix(k, prefix) {
+			t.Errorf("key %q lacks custom- prefix", k)
+			continue
+		}
+		suffix := strings.TrimPrefix(k, prefix)
+		if suffix == "" {
+			t.Errorf("key %q has empty suffix after custom-", k)
+		}
+		for _, r := range suffix {
+			ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-'
+			if !ok {
+				t.Errorf("key %q has SiYuan-invalid char %q in suffix", k, r)
+				break
+			}
+		}
+	}
+}
