@@ -25,11 +25,12 @@ type frontmatterData struct {
 
 // Meta is the result of a single-pass frontmatter + tag extraction.
 type Meta struct {
-	Title  string            // frontmatter "title" scalar; "" when absent/unparseable
-	Body   []byte            // content with the YAML frontmatter block removed
-	Attrs  map[string]string // existing custom-<tag> map (frontmatter + inline)
-	Domain string            // frontmatter "domain" scalar; "" when absent/non-scalar/null
-	Intent string            // frontmatter "intent" scalar; "" when absent/non-scalar/null
+	Title       string            // frontmatter "title" scalar; "" when absent/unparseable
+	Body        []byte            // content with the YAML frontmatter block removed
+	Attrs       map[string]string // existing custom-<tag> map (frontmatter + inline)
+	Domain      string            // frontmatter "domain" scalar; "" when absent/non-scalar/null
+	Intent      string            // frontmatter "intent" scalar; "" when absent/non-scalar/null
+	LastUpdated string            // first non-empty of last_updated > date > original_date; "" when absent
 }
 
 type TagExtractor struct {
@@ -78,7 +79,7 @@ func (e *TagExtractor) ExtractMeta(content []byte) (Meta, error) {
 	if lastUpdated != "" {
 		attrs["custom-last-updated"] = lastUpdated
 	}
-	return Meta{Title: title, Body: body, Attrs: attrs, Domain: domain, Intent: intent}, nil
+	return Meta{Title: title, Body: body, Attrs: attrs, Domain: domain, Intent: intent, LastUpdated: lastUpdated}, nil
 }
 
 // extract is the shared single-pass core used by both Extract and ExtractMeta
