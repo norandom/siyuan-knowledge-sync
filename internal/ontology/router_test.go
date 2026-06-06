@@ -320,3 +320,90 @@ func (d *RouteDecision) sortWarningsByRef() {
 		return d.AssetWarnings[i].Reference < d.AssetWarnings[j].Reference
 	})
 }
+
+// TestRoute_AnchorRefs_NotClassifiedAsAssetWarning_BugFix asserts that
+// markdown intra-document fragment links (`[Section](#anchor-name)`) and
+// inline `<a href="#x">` style refs are NOT classified as relative asset
+// references. They resolve within the same document regardless of file
+// location, so the router must not emit AssetWarnings for them.
+//
+// Bug surfaced by the real wiki migration of
+// `wiki/Linux & DevOps/Docker explained and illustrated.md`: its
+// auto-generated TOC contained 10 `[Section](#anchor)` links, all of which
+// were incorrectly classified as broken asset refs, polluting stderr with
+// 10 spurious warnings per file.
+func TestRoute_AnchorRefs_NotClassifiedAsAssetWarning_BugFix(t *testing.T) {
+	r := Router{}
+	local := "legacy/Hosting/foo.md"
+	body := []byte(strings.Join([]string{
+		"- [How Docker works](#how-docker-works)",
+		"- [Top 3 security concerns](#top-3-security-concerns)",
+		"- [Handy snippets](#handy-snippets)",
+		"See [this section](#privileged-workstations-or-servers) for details.",
+	}, "\n"))
+	got := r.Route(DevOps, local, body)
+	if len(got.AssetWarnings) != 0 {
+		t.Fatalf("len(AssetWarnings) = %d, want 0 (anchors must NOT be classified as asset refs); warnings=%+v",
+			len(got.AssetWarnings), got.AssetWarnings)
+	}
+}
+
+// TestRoute_TargetExistsProbe_UsesRepoPath_WhenSet_BugFix asserts that when
+// the router is constructed with a repoPath (via NewRouter), the
+// TargetExists probe resolves the new asset location against that root —
+// not against the process working directory.
+//
+// Bug surfaced by the real wiki migration: assets had been pre-migrated to
+// `wiki/Linux & DevOps/attachments/*.png` (present on disk), but the
+// router's `os.Stat` ran with a cwd of the pocket-know dev tree, not the
+// wiki repo root, so every probe returned false. The Docker note's per-
+// entry error report listed 5 phantom "target_exists=false" warnings on
+// assets that were verifiably present.
+func TestRoute_TargetExistsProbe_UsesRepoPath_WhenSet_BugFix(t *testing.T) {
+	repoRoot := t.TempDir()
+	// Place an asset at the path the route would resolve to AFTER the move.
+	// The file lives under repoRoot at `wiki/Linux & DevOps/attachments/p.png`.
+	canonicalAssetDir := filepath.Join(repoRoot, "wiki", "Linux & DevOps", "attachments")
+	if err := os.MkdirAll(canonicalAssetDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(canonicalAssetDir, "p.png"), []byte("png"), 0o644); err != nil {
+		t.Fatalf("write asset: %v", err)
+	}
+
+	// Source file (pre-move) lives at the legacy path; body references the
+	// asset relatively as `attachments/p.png` (the post-rewrite shape from
+	// cobesy).
+	local := "wiki/Automation (DevOps)/Containers/note.md"
+	body := []byte("![](attachments/p.png)\n")
+
+	r := NewRouter(repoRoot)
+	got := r.Route(DevOps, local, body)
+
+	if len(got.AssetWarnings) != 1 {
+		t.Fatalf("len(AssetWarnings) = %d, want 1; warnings=%+v",
+			len(got.AssetWarnings), got.AssetWarnings)
+	}
+	if !got.AssetWarnings[0].TargetExists {
+		t.Errorf("TargetExists = false; want true (asset at %q is present and probe must resolve against repoPath %q)",
+			got.AssetWarnings[0].NewResolved, repoRoot)
+	}
+}
+
+// TestRoute_DefaultRouter_FallsBackToCwdProbe asserts backward
+// compatibility: a `Router{}` instantiated without repoPath still works
+// (existing call sites that haven't migrated to NewRouter, and the older
+// tests, must keep functioning). The probe falls back to cwd-relative
+// os.Stat, which returns false for synthetic test paths.
+func TestRoute_DefaultRouter_FallsBackToCwdProbe(t *testing.T) {
+	r := Router{}
+	local := "legacy/Hosting/foo.md"
+	body := []byte("![](assets/foo.png)\n")
+	got := r.Route(DevOps, local, body)
+	if len(got.AssetWarnings) != 1 {
+		t.Fatalf("len(AssetWarnings) = %d, want 1", len(got.AssetWarnings))
+	}
+	if got.AssetWarnings[0].TargetExists {
+		t.Errorf("TargetExists = true for a synthetic path; want false (no real asset on disk)")
+	}
+}

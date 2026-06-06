@@ -25,7 +25,19 @@ import (
 //   - For RouteMove, TargetPath is <canonical-folder>/<basename(localPath)>;
 //     subdirectory structure under the source is intentionally NOT mirrored
 //     under the canonical folder (per design: "preserving the filename").
-type Router struct{}
+type Router struct {
+	repoPath string
+}
+
+// NewRouter returns a Router whose AssetWarning target-existence probe
+// resolves paths against repoPath rather than the process working
+// directory. Production call sites that run outside the repo root (the
+// migrate executor and the sync engine) must use this constructor.
+// A zero-value Router{} still works; its probe falls back to cwd-relative
+// os.Stat, which is the behavior the unit tests rely on.
+func NewRouter(repoPath string) Router {
+	return Router{repoPath: repoPath}
+}
 
 // RouteAction is the discriminator for what the gate should do with a
 // file declaring a given Domain at a given local path.
@@ -101,8 +113,8 @@ func (Router) CanonicalFolder(d Domain) string {
 //     AssetWarning for each reference whose resolved location would
 //     differ after the move. For RouteNoop, no AssetWarnings are emitted
 //     (the resolved location is unchanged by definition).
-func (Router) Route(d Domain, localPath string, body []byte) RouteDecision {
-	canonical := Router{}.CanonicalFolder(d)
+func (r Router) Route(d Domain, localPath string, body []byte) RouteDecision {
+	canonical := r.CanonicalFolder(d)
 	srcSlash := filepath.ToSlash(filepath.Clean(localPath))
 
 	decision := RouteDecision{
@@ -119,7 +131,7 @@ func (Router) Route(d Domain, localPath string, body []byte) RouteDecision {
 	decision.TargetPath = filepath.ToSlash(
 		filepath.Join(canonical, filepath.Base(srcSlash)),
 	)
-	decision.AssetWarnings = scanAssetRefs(body, srcSlash, decision.TargetPath)
+	decision.AssetWarnings = scanAssetRefs(body, srcSlash, decision.TargetPath, r.repoPath)
 	return decision
 }
 
@@ -147,7 +159,7 @@ var markdownRefPattern = regexp.MustCompile(`!?\[[^\]]*\]\(([^)\s]+)\)`)
 // scanAssetRefs walks body line by line, tracking ``` code-block state,
 // and collects an AssetWarning for each relative markdown reference whose
 // resolved path would change between srcSlash and targetSlash.
-func scanAssetRefs(body []byte, srcSlash, targetSlash string) []AssetWarning {
+func scanAssetRefs(body []byte, srcSlash, targetSlash, repoPath string) []AssetWarning {
 	if len(body) == 0 {
 		return nil
 	}
@@ -177,11 +189,15 @@ func scanAssetRefs(body []byte, srcSlash, targetSlash string) []AssetWarning {
 				// The move did not change where this ref resolves.
 				continue
 			}
+			probePath := newRes
+			if repoPath != "" {
+				probePath = filepath.Join(repoPath, newRes)
+			}
 			out = append(out, AssetWarning{
 				Reference:    ref,
 				OldResolved:  oldRes,
 				NewResolved:  newRes,
-				TargetExists: pathExists(newRes),
+				TargetExists: pathExists(probePath),
 			})
 		}
 	}
@@ -194,6 +210,13 @@ func scanAssetRefs(body []byte, srcSlash, targetSlash string) []AssetWarning {
 // (~/foo), or empty is skipped.
 func isRelativeAssetRef(ref string) bool {
 	if ref == "" {
+		return false
+	}
+	// Intra-document fragment anchors (`[Section](#anchor)`) resolve within
+	// the same document regardless of file location, so a routing move
+	// never invalidates them. The Docker-note migration surfaced 10 false
+	// positives per file from TOC-style anchors.
+	if strings.HasPrefix(ref, "#") {
 		return false
 	}
 	lower := strings.ToLower(ref)

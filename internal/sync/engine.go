@@ -166,7 +166,7 @@ func (e *SyncEngine) processFile(ctx context.Context, report *types.SyncReport, 
 	// (carry-in-error-channel per the existing per-file issue pattern) and
 	// do NOT abort the file (Req 9.4).
 	if metaErr == nil && meta.Domain != "" {
-		router := ontology.Router{}
+		router := ontology.NewRouter(e.repoPath)
 		decision := router.Route(ontology.Domain(meta.Domain), tf.Path, meta.Body)
 
 		for _, w := range decision.AssetWarnings {
