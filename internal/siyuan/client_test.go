@@ -926,3 +926,115 @@ func TestAllEndpointPaths(t *testing.T) {
 		})
 	}
 }
+
+// TestUploadAsset_RoundTripsStoredPath asserts that UploadAsset POSTs a
+// multipart/form-data request with the file under the `file[]` field and
+// returns the SiYuan-assigned `assets/<orig>-<ts>-<rand>.<ext>` path from
+// the succMap.
+func TestUploadAsset_RoundTripsStoredPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	localPath := tmpDir + "/test.png"
+	if err := writeFile(t, localPath, []byte("FAKE_PNG_BYTES")); err != nil {
+		t.Fatal(err)
+	}
+
+	var capturedFilename, capturedContentType, capturedAuth, capturedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		capturedAuth = r.Header.Get("Authorization")
+		capturedContentType = r.Header.Get("Content-Type")
+		if err := r.ParseMultipartForm(10 << 20); err != nil {
+			t.Errorf("ParseMultipartForm: %v", err)
+		}
+		files := r.MultipartForm.File["file[]"]
+		if len(files) == 1 {
+			capturedFilename = files[0].Filename
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"code":0,"msg":"","data":{"errFiles":null,"succMap":{"test.png":"assets/test-20260606-abc.png"}}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-token")
+	stored, err := client.UploadAsset(context.Background(), localPath)
+	if err != nil {
+		t.Fatalf("UploadAsset: %v", err)
+	}
+	if stored != "assets/test-20260606-abc.png" {
+		t.Errorf("stored path = %q, want %q", stored, "assets/test-20260606-abc.png")
+	}
+	if capturedPath != "/api/asset/upload" {
+		t.Errorf("path = %q, want /api/asset/upload", capturedPath)
+	}
+	if capturedAuth != "Token test-token" {
+		t.Errorf("auth = %q, want %q", capturedAuth, "Token test-token")
+	}
+	if !strings.HasPrefix(capturedContentType, "multipart/form-data") {
+		t.Errorf("content-type = %q, want multipart/form-data prefix", capturedContentType)
+	}
+	if capturedFilename != "test.png" {
+		t.Errorf("filename = %q, want test.png", capturedFilename)
+	}
+}
+
+// TestUploadAsset_APIErrorPropagated asserts SiYuan code != 0 surfaces as
+// *APIError (caller can decide whether to make it fatal).
+func TestUploadAsset_APIErrorPropagated(t *testing.T) {
+	tmpDir := t.TempDir()
+	localPath := tmpDir + "/x.png"
+	if err := writeFile(t, localPath, []byte("X")); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"code":-1,"msg":"asset rejected","data":null}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-token")
+	_, err := client.UploadAsset(context.Background(), localPath)
+	if err == nil {
+		t.Fatal("expected error for code -1")
+	}
+	apiErr := new(APIError)
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *APIError, got %T: %v", err, err)
+	}
+	if apiErr.Code != -1 {
+		t.Errorf("APIError.Code = %d, want -1", apiErr.Code)
+	}
+}
+
+// TestUploadAsset_MissingFromSuccMap asserts that a success envelope
+// without the file's basename in succMap surfaces as a descriptive error
+// (defensive guard — SiYuan's contract says the basename is always there
+// when code == 0, but partial-success edge cases should not silently
+// return an empty stored path).
+func TestUploadAsset_MissingFromSuccMap(t *testing.T) {
+	tmpDir := t.TempDir()
+	localPath := tmpDir + "/y.png"
+	if err := writeFile(t, localPath, []byte("Y")); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"code":0,"msg":"","data":{"errFiles":["y.png"],"succMap":{}}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-token")
+	_, err := client.UploadAsset(context.Background(), localPath)
+	if err == nil {
+		t.Fatal("expected error when succMap lacks the basename")
+	}
+	if !strings.Contains(err.Error(), "y.png") || !strings.Contains(err.Error(), "succMap") {
+		t.Errorf("error must reference the missing basename + succMap, got: %v", err)
+	}
+}
+
+// writeFile is a test helper that writes content using os semantics.
+// Kept local to avoid pulling os into the test imports above.
+func writeFile(t *testing.T, path string, content []byte) error {
+	t.Helper()
+	return writeTestFile(path, content)
+}

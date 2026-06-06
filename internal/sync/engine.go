@@ -228,6 +228,14 @@ func (e *SyncEngine) processFile(ctx context.Context, report *types.SyncReport, 
 		})
 	}
 
+	// Step 2.5: upload each relative asset reference in the body to SiYuan
+	// and rewrite the body to point at the SiYuan-assigned `assets/<...>`
+	// path. Without this, markdown like `![](attachments/foo.png)` reaches
+	// SiYuan unresolved and the image renders broken. Per-asset failures
+	// are non-fatal (same policy as tag attrs).
+	uploadBody, assetErrs := e.uploadAndRewriteAssets(ctx, tf.Path, filepath.Dir(fullPath), uploadBody)
+	report.Errors = append(report.Errors, assetErrs...)
+
 	// Step 3: create or update first to establish the doc ID.
 	var docID string
 	if isNew || existingSiYuanID == "" {

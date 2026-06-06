@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -286,6 +289,101 @@ func (c *Client) SetBlockAttrs(ctx context.Context, id string, attrs map[string]
 		"id":    id,
 		"attrs": attrs,
 	}, nil)
+}
+
+// UploadAsset uploads a single local file to SiYuan via /api/asset/upload
+// and returns the asset path SiYuan assigned (e.g.
+// "assets/<orig-name>-<timestamp>-<random>.<ext>"). Empirically SiYuan
+// always returns paths under the `assets/` prefix regardless of any
+// assetsDirPath form value; the caller must rewrite markdown body refs
+// to use the returned path before the doc is uploaded, otherwise the
+// images render broken.
+//
+// Errors:
+//   - file open / multipart write: wrapped fs error
+//   - HTTP transport / non-JSON gateway response: opaque transport error
+//     (or *CloudflareAccessError if CF Access markers are present, matching
+//     doRequest's classification rule)
+//   - SiYuan envelope code != 0: *APIError
+//   - upload succeeded but no entry for the file's basename in succMap:
+//     unwrapped descriptive error including errFiles
+func (c *Client) UploadAsset(ctx context.Context, localPath string) (string, error) {
+	f, err := os.Open(localPath)
+	if err != nil {
+		return "", fmt.Errorf("open asset: %w", err)
+	}
+	defer f.Close()
+
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	fw, err := w.CreateFormFile("file[]", filepath.Base(localPath))
+	if err != nil {
+		return "", fmt.Errorf("create form file: %w", err)
+	}
+	if _, err := io.Copy(fw, f); err != nil {
+		return "", fmt.Errorf("copy file body: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		return "", fmt.Errorf("close multipart writer: %w", err)
+	}
+
+	u := c.baseURL + "/api/asset/upload"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, &body)
+	if err != nil {
+		return "", fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	req.Header.Set("Authorization", "Token "+c.token)
+	for k, v := range c.extraHeaders {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("http request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read response: %w", err)
+	}
+
+	var envelope struct {
+		Code int             `json:"code"`
+		Msg  string          `json:"msg"`
+		Data json.RawMessage `json:"data"`
+	}
+	decodeErr := json.Unmarshal(respBytes, &envelope)
+	contentType := resp.Header.Get("Content-Type")
+	looksJSON := strings.Contains(strings.ToLower(contentType), "json")
+	if !looksJSON || decodeErr != nil {
+		if hasCloudflareAccessMarkers(resp, respBytes) {
+			return "", &CloudflareAccessError{Endpoint: c.baseURL}
+		}
+		ct := contentType
+		if ct == "" {
+			ct = "(none)"
+		}
+		return "", fmt.Errorf("siyuan endpoint returned a non-JSON response (HTTP %d, content-type %q); expected a SiYuan API envelope", resp.StatusCode, ct)
+	}
+	if envelope.Code != 0 {
+		return "", &APIError{Code: envelope.Code, Msg: envelope.Msg}
+	}
+
+	var data struct {
+		SuccMap  map[string]string `json:"succMap"`
+		ErrFiles []string          `json:"errFiles"`
+	}
+	if err := json.Unmarshal(envelope.Data, &data); err != nil {
+		return "", fmt.Errorf("parse upload data: %w", err)
+	}
+	base := filepath.Base(localPath)
+	stored, ok := data.SuccMap[base]
+	if !ok {
+		return "", fmt.Errorf("upload reported success but no entry for %q in succMap (errFiles=%v)", base, data.ErrFiles)
+	}
+	return stored, nil
 }
 
 func (c *Client) GetBlockAttrs(ctx context.Context, id string) (map[string]string, error) {
