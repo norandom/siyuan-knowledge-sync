@@ -96,6 +96,22 @@ type createdDoc struct {
 	ID         string
 }
 
+// filterUserDocs strips engine-owned intent-index docs (HPath of the form
+// `/_<intent>_index.md`) from the mock's createdDocs slice. Migration
+// assertions about V1 data-safety and per-entry upload count operate on
+// USER docs only; the index docs are derived artifacts upserted once per
+// canonical notebook by SyncEngine.ensureIntentIndices.
+func filterUserDocs(docs []createdDoc) []createdDoc {
+	out := make([]createdDoc, 0, len(docs))
+	for _, d := range docs {
+		if strings.HasPrefix(d.HPath, "/_") && strings.HasSuffix(d.HPath, "_index.md") {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
 func newMockSiYuan(t *testing.T) (*mockSiYuan, *httptest.Server) {
 	t.Helper()
 	m := &mockSiYuan{
@@ -175,6 +191,13 @@ func newMockSiYuan(t *testing.T) (*mockSiYuan, *httptest.Server) {
 			}
 			m.setAttrs[id] = attrs
 			_ = enc.Encode(map[string]any{"code": 0, "msg": ""})
+
+		case "/api/query/sql":
+			// Indices' SQL queries return empty result sets in the mock.
+			// Tests that care about the index content can populate their
+			// own match data elsewhere; tests that don't care just need
+			// the call not to fail.
+			_ = enc.Encode(map[string]any{"code": 0, "msg": "", "data": []map[string]any{}})
 
 		default:
 			_ = enc.Encode(map[string]any{
@@ -687,14 +710,18 @@ func TestApply_KeepFailureIsolatedByGitMvError(t *testing.T) {
 		t.Errorf("entry 1: expected empty Error on success; got %q", o1.Error)
 	}
 
-	// Mock contract: exactly one createDocWithMd, for the successful entry
-	// landing at the canonical devops hpath. Entry 0's failure happens
-	// BEFORE any SiYuan call, so the mock must not see an upload for bad.md.
-	if got := len(mock.createdDocs); got != 1 {
-		t.Fatalf("mock createdDocs: want 1, got %d (%+v)", got, mock.createdDocs)
+	// Mock contract: exactly one createDocWithMd for an actual USER doc.
+	// Entry 0's failure happens BEFORE any SiYuan call, so the mock must
+	// not see an upload for bad.md. The engine ALSO upserts the five
+	// per-intent index docs (`/_<intent>_index.md`) once per canonical
+	// notebook — those are filtered out here since they are engine-owned
+	// derived artifacts, not user files.
+	userDocs := filterUserDocs(mock.createdDocs)
+	if got := len(userDocs); got != 1 {
+		t.Fatalf("user-doc createdDocs: want 1, got %d (%+v)", got, userDocs)
 	}
-	if got, want := mock.createdDocs[0].HPath, "/good.md"; got != want {
-		t.Errorf("mock createdDocs[0].HPath = %q, want %q", got, want)
+	if got, want := userDocs[0].HPath, "/good.md"; got != want {
+		t.Errorf("userDocs[0].HPath = %q, want %q", got, want)
 	}
 }
 
@@ -868,17 +895,20 @@ func TestApply_HpathCollision_V1_IdempotencyProof(t *testing.T) {
 		}
 	}
 
-	// Mock contract: SiYuan only sees the FIRST entry's create call. The
-	// second entry's failure is caught before any upload, so the canonical
-	// hpath receives exactly one createDocWithMd. This is the V1 data-safety
-	// proof: even without an explicit pre-write hpath probe, the second
-	// write never reaches SiYuan.
-	if got := len(mock.createdDocs); got != 1 {
-		t.Fatalf("mock createdDocs: want 1 (V1 data-safety), got %d (%+v)",
-			got, mock.createdDocs)
+	// Mock contract: SiYuan only sees the FIRST entry's USER create call.
+	// The second entry's failure is caught before any upload, so the
+	// canonical hpath receives exactly one createDocWithMd. This is the
+	// V1 data-safety proof: even without an explicit pre-write hpath
+	// probe, the second write never reaches SiYuan. Engine-owned intent
+	// index docs (`/_<intent>_index.md`) are filtered out since they are
+	// derived artifacts upserted once per canonical notebook.
+	userDocs := filterUserDocs(mock.createdDocs)
+	if got := len(userDocs); got != 1 {
+		t.Fatalf("user-doc createdDocs: want 1 (V1 data-safety), got %d (%+v)",
+			got, userDocs)
 	}
-	if got, want := mock.createdDocs[0].HPath, "/colliding.md"; got != want {
-		t.Errorf("mock createdDocs[0].HPath = %q, want %q", got, want)
+	if got, want := userDocs[0].HPath, "/colliding.md"; got != want {
+		t.Errorf("userDocs[0].HPath = %q, want %q", got, want)
 	}
 
 	// The pre-existing source file for entry 1 must remain at its original

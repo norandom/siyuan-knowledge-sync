@@ -89,6 +89,22 @@ type createdDocRecord struct {
 	ID         string
 }
 
+// userCreatedDocs returns h.createdDocs with the engine-owned per-intent
+// index docs (HPath `/_<intent>_index.md`) filtered out. Tests that
+// assert on the count or content of USER creates use this view; the
+// indices are a derived artifact upserted once per canonical notebook
+// by SyncEngine.ensureIntentIndices.
+func (h *mockSiYuanHandler) userCreatedDocs() []createdDocRecord {
+	out := make([]createdDocRecord, 0, len(h.createdDocs))
+	for _, d := range h.createdDocs {
+		if strings.HasPrefix(d.HPath, "/_") && strings.HasSuffix(d.HPath, "_index.md") {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
 func newMockSiYuanServer(t *testing.T) (*mockSiYuanHandler, *httptest.Server) {
 	t.Helper()
 	h := &mockSiYuanHandler{
@@ -212,6 +228,10 @@ func newMockSiYuanServer(t *testing.T) (*mockSiYuanHandler, *httptest.Server) {
 			h.setAttrs[id] = attrs
 			enc.Encode(map[string]any{"code": 0, "msg": ""})
 
+		case "/api/query/sql":
+			// Indices' SQL queries return empty result sets in the mock.
+			enc.Encode(map[string]any{"code": 0, "msg": "", "data": []map[string]any{}})
+
 		default:
 			enc.Encode(map[string]any{"code": 1, "msg": "unknown endpoint: " + r.URL.Path})
 		}
@@ -266,10 +286,10 @@ func TestSync_NewFiles_CreatesDocuments(t *testing.T) {
 		t.Errorf("expected 0 errors, got %d: %v", len(report.Errors), report.Errors)
 	}
 
-	if len(h.createdDocs) != 1 {
-		t.Fatalf("expected 1 document created in SiYuan, got %d", len(h.createdDocs))
+	if len(h.userCreatedDocs()) != 1 {
+		t.Fatalf("expected 1 document created in SiYuan, got %d", len(h.userCreatedDocs()))
 	}
-	doc := h.createdDocs[0]
+	doc := h.userCreatedDocs()[0]
 	if doc.HPath != "/sub/file.md" {
 		t.Errorf("expected hpath '/sub/file.md', got %q", doc.HPath)
 	}
@@ -359,8 +379,8 @@ func TestSync_FolderHierarchyPreserved(t *testing.T) {
 	if len(report.Created) != 2 {
 		t.Fatalf("expected 2 created, got %d", len(report.Created))
 	}
-	if len(h.createdDocs) != 2 {
-		t.Fatalf("expected 2 documents created, got %d", len(h.createdDocs))
+	if len(h.userCreatedDocs()) != 2 {
+		t.Fatalf("expected 2 documents created, got %d", len(h.userCreatedDocs()))
 	}
 
 	if _, ok := h.notebooks["journal"]; !ok {
@@ -445,7 +465,7 @@ func TestSync_SkipsUnchangedFiles(t *testing.T) {
 		t.Errorf("expected 1 updated (a.md), got %d", len(report2.Updated))
 	}
 
-	totalCalls := len(h.createdDocs) + len(h.updatedDocs)
+	totalCalls := len(h.userCreatedDocs()) + len(h.updatedDocs)
 	if totalCalls != 3 {
 		t.Errorf("expected 3 total SiYuan operations (2 creates + 1 update), got %d", totalCalls)
 	}
@@ -519,11 +539,11 @@ Content.
 	if len(report.Created) != 1 {
 		t.Fatalf("expected 1 created, got %d (errors=%v)", len(report.Created), report.Errors)
 	}
-	if len(h.createdDocs) != 1 {
-		t.Fatalf("expected 1 document created, got %d", len(h.createdDocs))
+	if len(h.userCreatedDocs()) != 1 {
+		t.Fatalf("expected 1 document created, got %d", len(h.userCreatedDocs()))
 	}
 
-	fixedContent := h.createdDocs[0].Markdown
+	fixedContent := h.userCreatedDocs()[0].Markdown
 	if !strings.Contains(fixedContent, "## Skipped H2") {
 		t.Errorf("expected heading to be fixed (### -> ##), got:\n%s", fixedContent)
 	}
@@ -555,8 +575,8 @@ func TestSync_EmptyRepo(t *testing.T) {
 	if len(report.Errors) != 0 {
 		t.Errorf("expected 0 errors, got %d", len(report.Errors))
 	}
-	if len(h.createdDocs) != 0 {
-		t.Errorf("expected 0 API calls, got %d", len(h.createdDocs))
+	if len(h.userCreatedDocs()) != 0 {
+		t.Errorf("expected 0 API calls, got %d", len(h.userCreatedDocs()))
 	}
 }
 
@@ -621,10 +641,10 @@ func TestSync_RootLevelMdMapsToDefaultNotebook(t *testing.T) {
 	if _, ok := h.notebooks["root"]; !ok {
 		t.Errorf("expected default notebook 'root' to be created, got %v", h.notebooks)
 	}
-	if len(h.createdDocs) != 1 {
-		t.Fatalf("expected 1 doc created, got %d", len(h.createdDocs))
+	if len(h.userCreatedDocs()) != 1 {
+		t.Fatalf("expected 1 doc created, got %d", len(h.userCreatedDocs()))
 	}
-	doc := h.createdDocs[0]
+	doc := h.userCreatedDocs()[0]
 	if doc.HPath != "/readme.md" {
 		t.Errorf("expected hpath '/readme.md', got %q", doc.HPath)
 	}
@@ -830,11 +850,11 @@ Some content {: myattr="value"}
 	if len(report.Created) != 1 {
 		t.Fatalf("expected 1 created, got %d (errors=%v)", len(report.Created), report.Errors)
 	}
-	if len(h.createdDocs) != 1 {
-		t.Fatalf("expected 1 doc, got %d", len(h.createdDocs))
+	if len(h.userCreatedDocs()) != 1 {
+		t.Fatalf("expected 1 doc, got %d", len(h.userCreatedDocs()))
 	}
 
-	content := h.createdDocs[0].Markdown
+	content := h.userCreatedDocs()[0].Markdown
 	if !strings.Contains(content, "# Bad Heading") {
 		t.Errorf("expected ### to become #, got:\n%s", content)
 	}
@@ -866,11 +886,11 @@ func TestSync_AutofixDisabled(t *testing.T) {
 	if len(report.Created) != 1 {
 		t.Fatalf("expected 1 created, got %d (errors=%v)", len(report.Created), report.Errors)
 	}
-	if len(h.createdDocs) != 1 {
-		t.Fatalf("expected 1 doc, got %d", len(h.createdDocs))
+	if len(h.userCreatedDocs()) != 1 {
+		t.Fatalf("expected 1 doc, got %d", len(h.userCreatedDocs()))
 	}
 
-	content := h.createdDocs[0].Markdown
+	content := h.userCreatedDocs()[0].Markdown
 	if !strings.Contains(content, "### Bad Heading") {
 		t.Errorf("expected ### to remain unchanged (no autofix), got:\n%s", content)
 	}
@@ -972,11 +992,11 @@ func TestSync_NotebookExists_UsesExisting(t *testing.T) {
 	if len(report.Created) != 1 {
 		t.Fatalf("expected 1 created, got %d (errors=%v)", len(report.Created), report.Errors)
 	}
-	if len(h.createdDocs) != 1 {
-		t.Fatalf("expected 1 doc, got %d", len(h.createdDocs))
+	if len(h.userCreatedDocs()) != 1 {
+		t.Fatalf("expected 1 doc, got %d", len(h.userCreatedDocs()))
 	}
-	if h.createdDocs[0].NotebookID != "existing-nb-id" {
-		t.Errorf("expected existing notebook ID 'existing-nb-id', got %q", h.createdDocs[0].NotebookID)
+	if h.userCreatedDocs()[0].NotebookID != "existing-nb-id" {
+		t.Errorf("expected existing notebook ID 'existing-nb-id', got %q", h.userCreatedDocs()[0].NotebookID)
 	}
 	if len(h.createdNBs) > 0 {
 		t.Errorf("expected no notebook created, but got %v", h.createdNBs)
@@ -2442,10 +2462,10 @@ func TestSync_FrontmatterStrippedTitleAndTagsApplied(t *testing.T) {
 	if len(report.Errors) != 0 {
 		t.Fatalf("expected 0 errors, got %v", report.Errors)
 	}
-	if len(h.createdDocs) != 1 {
-		t.Fatalf("expected 1 created doc, got %d", len(h.createdDocs))
+	if len(h.userCreatedDocs()) != 1 {
+		t.Fatalf("expected 1 created doc, got %d", len(h.userCreatedDocs()))
 	}
-	doc := h.createdDocs[0]
+	doc := h.userCreatedDocs()[0]
 
 	// 13.1: frontmatter block must NOT be in the uploaded body.
 	if strings.Contains(doc.Markdown, "---") {
@@ -2506,10 +2526,10 @@ func TestSync_NoFrontmatterTitle_DoesNotRename(t *testing.T) {
 	if len(report.Created) != 1 || report.Created[0] != "notebook/sub/My Doc.md" {
 		t.Fatalf("expected 1 created notebook/sub/My Doc.md, got %v (errors=%v)", report.Created, report.Errors)
 	}
-	if len(h.createdDocs) != 1 {
-		t.Fatalf("expected 1 created doc, got %d", len(h.createdDocs))
+	if len(h.userCreatedDocs()) != 1 {
+		t.Fatalf("expected 1 created doc, got %d", len(h.userCreatedDocs()))
 	}
-	doc := h.createdDocs[0]
+	doc := h.userCreatedDocs()[0]
 
 	// The hpath-preservation invariant: NO renameDocByID call for this doc,
 	// and in fact no rename recorded at all.
@@ -2551,10 +2571,10 @@ func TestSync_MalformedFrontmatter_DegradesGracefully(t *testing.T) {
 	if len(report.Errors) == 0 {
 		t.Errorf("13.5: expected a report error for the frontmatter parse failure, got none")
 	}
-	if len(h.createdDocs) != 1 {
-		t.Fatalf("expected 1 created doc, got %d", len(h.createdDocs))
+	if len(h.userCreatedDocs()) != 1 {
+		t.Fatalf("expected 1 created doc, got %d", len(h.userCreatedDocs()))
 	}
-	doc := h.createdDocs[0]
+	doc := h.userCreatedDocs()[0]
 	// Full body uploaded (frontmatter NOT stripped because parse failed).
 	if doc.Markdown != content {
 		t.Errorf("13.5: expected full original content uploaded, got %q", doc.Markdown)
@@ -2596,8 +2616,8 @@ func TestSync_RenameDocByIDError_NonFatal(t *testing.T) {
 	if len(report.Errors) == 0 {
 		t.Errorf("step 7: expected a per-file error recorded for the rename failure, got none")
 	}
-	if len(h.createdDocs) != 1 {
-		t.Fatalf("expected 1 created doc, got %d", len(h.createdDocs))
+	if len(h.userCreatedDocs()) != 1 {
+		t.Fatalf("expected 1 created doc, got %d", len(h.userCreatedDocs()))
 	}
 }
 
@@ -2637,10 +2657,10 @@ func TestSync_SetBlockAttrsError_NonFatal(t *testing.T) {
 	if len(report.Errors) == 0 {
 		t.Errorf("step 7: expected a per-file error recorded for the setBlockAttrs failure, got none")
 	}
-	if len(h.createdDocs) != 1 {
-		t.Fatalf("expected 1 created doc, got %d", len(h.createdDocs))
+	if len(h.userCreatedDocs()) != 1 {
+		t.Fatalf("expected 1 created doc, got %d", len(h.userCreatedDocs()))
 	}
-	doc := h.createdDocs[0]
+	doc := h.userCreatedDocs()[0]
 	// Title still applied (RenameDocByID precedes the failing SetBlockAttrs).
 	if got := h.renamedTitles[doc.ID]; got != "T" {
 		t.Errorf("step 7: expected title still applied before setBlockAttrs failure, got %q (all=%v)", got, h.renamedTitles)
@@ -2682,10 +2702,10 @@ func TestSync_TagAttrs_ExactSetFromFrontmatterAndInline(t *testing.T) {
 	if len(report.Errors) != 0 {
 		t.Fatalf("expected 0 errors, got %v", report.Errors)
 	}
-	if len(h.createdDocs) != 1 {
-		t.Fatalf("expected 1 created doc, got %d", len(h.createdDocs))
+	if len(h.userCreatedDocs()) != 1 {
+		t.Fatalf("expected 1 created doc, got %d", len(h.userCreatedDocs()))
 	}
-	doc := h.createdDocs[0]
+	doc := h.userCreatedDocs()[0]
 
 	got := h.setAttrs[doc.ID]
 	if got == nil {
@@ -2758,8 +2778,8 @@ func TestSync_UpdatePath_SetsTitleFromFrontmatter(t *testing.T) {
 	for id := range h.docs {
 		docID = id
 	}
-	if docID == "" && len(h.createdDocs) > 0 {
-		docID = h.createdDocs[0].ID
+	if docID == "" && len(h.userCreatedDocs()) > 0 {
+		docID = h.userCreatedDocs()[0].ID
 	}
 	if got := h.renamedTitles[docID]; got != "Second Title" {
 		t.Errorf("13.2 (update path): expected title %q, got %q (all=%v)", "Second Title", got, h.renamedTitles)
@@ -2865,13 +2885,13 @@ func TestSync_SchemaGate_AbortsViolatingFile_BatchContinues(t *testing.T) {
 
 	// The gate fires BEFORE any upload: the mock saw exactly one createDocWithMd
 	// call, and it was for b.md (under its canonical routed hpath), not wiki/a.md.
-	if len(h.createdDocs) != 1 {
+	if len(h.userCreatedDocs()) != 1 {
 		t.Fatalf("Req 3.5: gate must abort before SiYuan API; expected exactly 1 createDocWithMd (for b.md), got %d: %+v",
-			len(h.createdDocs), h.createdDocs)
+			len(h.userCreatedDocs()), h.createdDocs)
 	}
-	if h.createdDocs[0].HPath != "/b.md" {
+	if h.userCreatedDocs()[0].HPath != "/b.md" {
 		t.Errorf("Req 3.5 + 3.2: expected the one createDocWithMd to be for /b.md (post-route), got hpath %q",
-			h.createdDocs[0].HPath)
+			h.userCreatedDocs()[0].HPath)
 	}
 }
 
@@ -2900,9 +2920,9 @@ func TestSync_SchemaGate_MultipleViolationsProduceMultipleErrors(t *testing.T) {
 	if len(report.Created) != 0 {
 		t.Errorf("Req 3.5: schema-violating file must not be created, got %v", report.Created)
 	}
-	if len(h.createdDocs) != 0 {
+	if len(h.userCreatedDocs()) != 0 {
 		t.Errorf("Req 3.5: gate must abort before any SiYuan API call, got %d createDocWithMd calls",
-			len(h.createdDocs))
+			len(h.userCreatedDocs()))
 	}
 
 	gateErrs := make([]types.SyncError, 0)
@@ -2964,8 +2984,8 @@ func TestSync_SchemaGate_NonOptInFile_BypassesGate(t *testing.T) {
 		t.Fatalf("opt-in gate: a file with no ontology keys must sync normally, got created=%v errors=%v",
 			report.Created, report.Errors)
 	}
-	if len(h.createdDocs) != 1 {
-		t.Fatalf("opt-in gate: expected exactly 1 createDocWithMd, got %d", len(h.createdDocs))
+	if len(h.userCreatedDocs()) != 1 {
+		t.Fatalf("opt-in gate: expected exactly 1 createDocWithMd, got %d", len(h.userCreatedDocs()))
 	}
 	// No JSON-encoded SchemaViolation should land in report.Errors for this file.
 	for _, e := range report.Errors {
@@ -3067,10 +3087,10 @@ func TestSync_OntologyRouting_MovesAndCommits(t *testing.T) {
 	}
 
 	// SiYuan side: exactly one createDocWithMd, addressed at the new hpath.
-	if len(h.createdDocs) != 1 {
-		t.Fatalf("Req 3.2: expected 1 createDocWithMd, got %d: %+v", len(h.createdDocs), h.createdDocs)
+	if len(h.userCreatedDocs()) != 1 {
+		t.Fatalf("Req 3.2: expected 1 createDocWithMd, got %d: %+v", len(h.userCreatedDocs()), h.createdDocs)
 	}
-	if got := h.createdDocs[0].HPath; got != "/foo.md" {
+	if got := h.userCreatedDocs()[0].HPath; got != "/foo.md" {
 		t.Errorf("Req 3.2: expected create hpath /foo.md, got %q", got)
 	}
 }
@@ -3114,8 +3134,8 @@ func TestSync_OntologyRouting_NoopWhenAlreadyCanonical(t *testing.T) {
 	}
 
 	// SiYuan got exactly one create, addressed at the canonical hpath.
-	if len(h.createdDocs) != 1 {
-		t.Fatalf("Req 3.6: expected 1 createDocWithMd, got %d", len(h.createdDocs))
+	if len(h.userCreatedDocs()) != 1 {
+		t.Fatalf("Req 3.6: expected 1 createDocWithMd, got %d", len(h.userCreatedDocs()))
 	}
 }
 
@@ -3207,7 +3227,7 @@ func TestSync_OntologyRouting_LegacyFileNoRoute(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "wiki/misc/legacy.md")); err != nil {
 		t.Errorf("legacy bypass: expected file unchanged at original path, stat err=%v", err)
 	}
-	if len(h.createdDocs) != 1 || h.createdDocs[0].HPath != "/misc/legacy.md" {
+	if len(h.userCreatedDocs()) != 1 || h.userCreatedDocs()[0].HPath != "/misc/legacy.md" {
 		t.Errorf("legacy bypass: expected one create at /misc/legacy.md, got %+v", h.createdDocs)
 	}
 }
@@ -3353,10 +3373,10 @@ func TestSync_RouteAndSync_HappyPath(t *testing.T) {
 
 	// Mock SiYuan: exactly one createDocWithMd at the routed hpath, body
 	// stripped of frontmatter.
-	if len(h.createdDocs) != 1 {
-		t.Fatalf("expected exactly 1 createDocWithMd, got %d: %+v", len(h.createdDocs), h.createdDocs)
+	if len(h.userCreatedDocs()) != 1 {
+		t.Fatalf("expected exactly 1 createDocWithMd, got %d: %+v", len(h.userCreatedDocs()), h.createdDocs)
 	}
-	doc := h.createdDocs[0]
+	doc := h.userCreatedDocs()[0]
 	if doc.HPath != "/foo.md" {
 		t.Errorf("expected create hpath /foo.md, got %q", doc.HPath)
 	}
@@ -3448,8 +3468,8 @@ func TestSync_RouteAndSync_SchemaViolationReturnsError(t *testing.T) {
 	}
 
 	// No SiYuan API call.
-	if len(h.createdDocs) != 0 {
-		t.Errorf("Req 2.6: gate must abort before any createDocWithMd, got %d", len(h.createdDocs))
+	if len(h.userCreatedDocs()) != 0 {
+		t.Errorf("Req 2.6: gate must abort before any createDocWithMd, got %d", len(h.userCreatedDocs()))
 	}
 
 	// No state entry at either the source or the (would-be) target path.
@@ -3496,11 +3516,11 @@ func TestSync_RouteAndSync_TitleFailure_StillInState(t *testing.T) {
 	}
 
 	// The mock DID receive a createDocWithMd call -- the body was uploaded.
-	if len(h.createdDocs) != 1 {
+	if len(h.userCreatedDocs()) != 1 {
 		t.Fatalf("Req 13.2 non-fatal: title failure must not block upload, got %d createDocWithMd calls",
-			len(h.createdDocs))
+			len(h.userCreatedDocs()))
 	}
-	doc := h.createdDocs[0]
+	doc := h.userCreatedDocs()[0]
 
 	// State IS populated: callers that need to distinguish
 	// "synced with warnings" from "rejected" check state membership.
@@ -3544,8 +3564,8 @@ func TestSync_RouteAndSync_FileNotFound(t *testing.T) {
 	}
 
 	// No SiYuan API calls.
-	if len(h.createdDocs) != 0 {
-		t.Errorf("expected no createDocWithMd calls on missing file, got %d", len(h.createdDocs))
+	if len(h.userCreatedDocs()) != 0 {
+		t.Errorf("expected no createDocWithMd calls on missing file, got %d", len(h.userCreatedDocs()))
 	}
 	if len(h.updatedDocs) != 0 {
 		t.Errorf("expected no updateBlock calls on missing file, got %d", len(h.updatedDocs))
@@ -3635,10 +3655,10 @@ func TestOntologyGate_Sync_AppliesCustomDomainIntentAttrs(t *testing.T) {
 		t.Fatalf("Req 4.1: expected Created=[%q], got %v (errors=%v)",
 			canonical, report.Created, report.Errors)
 	}
-	if len(h.createdDocs) != 1 {
-		t.Fatalf("Req 4.1: expected 1 createDocWithMd, got %d", len(h.createdDocs))
+	if len(h.userCreatedDocs()) != 1 {
+		t.Fatalf("Req 4.1: expected 1 createDocWithMd, got %d", len(h.userCreatedDocs()))
 	}
-	doc := h.createdDocs[0]
+	doc := h.userCreatedDocs()[0]
 
 	attrs := h.setAttrs[doc.ID]
 	if attrs == nil {
@@ -3751,12 +3771,12 @@ func TestOntologyGate_RoutingFlow_FourScenarios(t *testing.T) {
 			t.Errorf("unexpected violation payload: %+v", sv)
 		}
 		// The gate fires BEFORE any SiYuan write for the violating file.
-		if len(h.createdDocs) != 1 {
+		if len(h.userCreatedDocs()) != 1 {
 			t.Fatalf("expected exactly 1 createDocWithMd (for the valid sibling), got %d: %+v",
-				len(h.createdDocs), h.createdDocs)
+				len(h.userCreatedDocs()), h.createdDocs)
 		}
-		if h.createdDocs[0].HPath != "/b.md" {
-			t.Errorf("expected createDocWithMd at /b.md, got %q", h.createdDocs[0].HPath)
+		if h.userCreatedDocs()[0].HPath != "/b.md" {
+			t.Errorf("expected createDocWithMd at /b.md, got %q", h.userCreatedDocs()[0].HPath)
 		}
 	})
 
@@ -3817,10 +3837,10 @@ func TestOntologyGate_RoutingFlow_FourScenarios(t *testing.T) {
 		}
 
 		// SiYuan create call at the routed hpath.
-		if len(h.createdDocs) != 1 {
-			t.Fatalf("expected 1 createDocWithMd, got %d", len(h.createdDocs))
+		if len(h.userCreatedDocs()) != 1 {
+			t.Fatalf("expected 1 createDocWithMd, got %d", len(h.userCreatedDocs()))
 		}
-		if got := h.createdDocs[0].HPath; got != "/foo.md" {
+		if got := h.userCreatedDocs()[0].HPath; got != "/foo.md" {
 			t.Errorf("expected create hpath /foo.md, got %q", got)
 		}
 	})
@@ -3862,8 +3882,8 @@ func TestOntologyGate_RoutingFlow_FourScenarios(t *testing.T) {
 		}
 
 		// Exactly one create at the canonical hpath.
-		if len(h.createdDocs) != 1 {
-			t.Fatalf("expected 1 createDocWithMd, got %d", len(h.createdDocs))
+		if len(h.userCreatedDocs()) != 1 {
+			t.Fatalf("expected 1 createDocWithMd, got %d", len(h.userCreatedDocs()))
 		}
 	})
 

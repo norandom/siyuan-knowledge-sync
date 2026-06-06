@@ -25,24 +25,26 @@ import (
 const defaultNotebookName = "root"
 
 type SyncEngine struct {
-	client        *siyuan.Client
-	scanner       *git.GitScanner
-	state         *state.StateTracker
-	compliance    *compliance.ComplianceEngine
-	tags          *tags.TagExtractor
-	notebookCache map[string]string
-	repoPath      string
+	client         *siyuan.Client
+	scanner        *git.GitScanner
+	state          *state.StateTracker
+	compliance     *compliance.ComplianceEngine
+	tags           *tags.TagExtractor
+	notebookCache  map[string]string
+	indicesEnsured map[string]bool // boxID -> "intent indices already upserted this session"
+	repoPath       string
 }
 
 func NewSyncEngine(client *siyuan.Client, scanner *git.GitScanner, tracker *state.StateTracker, ce *compliance.ComplianceEngine) *SyncEngine {
 	return &SyncEngine{
-		client:        client,
-		scanner:       scanner,
-		state:         tracker,
-		compliance:    ce,
-		tags:          tags.NewTagExtractor(),
-		notebookCache: make(map[string]string),
-		repoPath:      scanner.RepoPath(),
+		client:         client,
+		scanner:        scanner,
+		state:          tracker,
+		compliance:     ce,
+		tags:           tags.NewTagExtractor(),
+		notebookCache:  make(map[string]string),
+		indicesEnsured: make(map[string]bool),
+		repoPath:       scanner.RepoPath(),
 	}
 }
 
@@ -212,6 +214,22 @@ func (e *SyncEngine) processFile(ctx context.Context, report *types.SyncReport, 
 			File: tf.Path, Message: fmt.Sprintf("notebook: %v", err),
 		})
 		return
+	}
+
+	// Per-notebook one-time setup: synthesize the per-intent index docs
+	// once per session so each ONTOLOGY DOMAIN notebook gets a top-level
+	// table of contents (one embed-query doc per intent in
+	// ontology.AllIntents()). Skipped for non-canonical notebooks
+	// (legacy/transitional folders carry no intent axis). Non-fatal: a
+	// failed upsert never blocks the actual file sync.
+	notebookName := topLevelFolder(tf.Path)
+	if isOntologyDomainNotebook(notebookName) && !e.indicesEnsured[notebookID] {
+		e.indicesEnsured[notebookID] = true
+		if err := e.ensureIntentIndices(ctx, notebookID, notebookName); err != nil {
+			report.Errors = append(report.Errors, types.SyncError{
+				File: tf.Path, Message: fmt.Sprintf("ensure intent indices: %v", err),
+			})
+		}
 	}
 
 	hpath := buildHPath(tf.Path)
