@@ -3,6 +3,7 @@ package tags
 import (
 	"bytes"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/yuin/goldmark"
@@ -79,7 +80,49 @@ func (e *TagExtractor) ExtractMeta(content []byte) (Meta, error) {
 	if lastUpdated != "" {
 		attrs["custom-last-updated"] = lastUpdated
 	}
+	// Also emit the visible-chip variant: SiYuan renders the `tags` (plural)
+	// attribute as the clickable tag pills at the top of each doc. The
+	// `custom-<tag>` markers we set above are queryable via SQL but do NOT
+	// appear in the UI tag panel. Gather every `custom-<x>` suffix that's
+	// NOT a reserved metadata key, sort for determinism, and join with
+	// commas (the format SiYuan parses for the tag list).
+	if visibleTags := collectVisibleTags(attrs); visibleTags != "" {
+		attrs["tags"] = visibleTags
+	}
 	return Meta{Title: title, Body: body, Attrs: attrs, Domain: domain, Intent: intent, LastUpdated: lastUpdated}, nil
+}
+
+// reservedAttrSuffixes holds the `custom-<suffix>` keys that carry
+// ontology metadata, not user-supplied tags. They're excluded from the
+// visible `tags` attribute so the UI chips don't show `domain`,
+// `intent`, or `last-updated` as if they were content tags.
+var reservedAttrSuffixes = map[string]struct{}{
+	"domain":       {},
+	"intent":       {},
+	"last-updated": {},
+}
+
+// collectVisibleTags returns the comma-separated, sorted list of tag
+// suffixes from the `custom-<tag>` keys in attrs, excluding any reserved
+// ontology-metadata suffixes. Returns "" if no real tags are present so
+// the caller knows not to set the attribute at all.
+func collectVisibleTags(attrs map[string]string) string {
+	var list []string
+	for k := range attrs {
+		if !strings.HasPrefix(k, "custom-") {
+			continue
+		}
+		suffix := strings.TrimPrefix(k, "custom-")
+		if _, reserved := reservedAttrSuffixes[suffix]; reserved {
+			continue
+		}
+		list = append(list, suffix)
+	}
+	if len(list) == 0 {
+		return ""
+	}
+	sort.Strings(list)
+	return strings.Join(list, ",")
 }
 
 // extract is the shared single-pass core used by both Extract and ExtractMeta

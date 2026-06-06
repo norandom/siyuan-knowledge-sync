@@ -421,6 +421,7 @@ Body with #tag3 here.
 		"custom-tag1": "",
 		"custom-tag2": "",
 		"custom-tag3": "",
+		"tags":        "tag1,tag2,tag3",
 	}
 	if !tagsEqual(meta.Attrs, expectedAttrs) {
 		t.Errorf("expected attrs %v, got %v", expectedAttrs, meta.Attrs)
@@ -430,9 +431,25 @@ Body with #tag3 here.
 	if err != nil {
 		t.Fatalf("unexpected Extract error: %v", err)
 	}
-	if !tagsEqual(meta.Attrs, extractResult) {
+	if !tagsEqual(stripExtractMetaInjections(meta.Attrs), extractResult) {
 		t.Errorf("Attrs drifted from Extract: meta=%v extract=%v", meta.Attrs, extractResult)
 	}
+}
+
+// stripExtractMetaInjections returns m with ExtractMeta-only keys removed
+// (custom-domain, custom-intent, custom-last-updated, tags). Used by drift
+// guards that compare Extract vs ExtractMeta — the injected keys are
+// deliberate extensions, not drift.
+func stripExtractMetaInjections(m map[string]string) map[string]string {
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		switch k {
+		case "tags", "custom-domain", "custom-intent", "custom-last-updated":
+			continue
+		}
+		out[k] = v
+	}
+	return out
 }
 
 func TestExtractMeta_NoFrontmatter(t *testing.T) {
@@ -456,6 +473,7 @@ Some body text with #inlinetag here.
 
 	expectedAttrs := map[string]string{
 		"custom-inlinetag": "",
+		"tags":             "inlinetag",
 	}
 	if !tagsEqual(meta.Attrs, expectedAttrs) {
 		t.Errorf("expected attrs %v, got %v", expectedAttrs, meta.Attrs)
@@ -465,7 +483,7 @@ Some body text with #inlinetag here.
 	if err != nil {
 		t.Fatalf("unexpected Extract error: %v", err)
 	}
-	if !tagsEqual(meta.Attrs, extractResult) {
+	if !tagsEqual(stripExtractMetaInjections(meta.Attrs), extractResult) {
 		t.Errorf("Attrs drifted from Extract: meta=%v extract=%v", meta.Attrs, extractResult)
 	}
 }
@@ -495,6 +513,7 @@ date: 2026-01-01
 	expectedAttrs := map[string]string{
 		"custom-only-tag":     "",
 		"custom-last-updated": "2026-01-01",
+		"tags":                "only-tag",
 	}
 	if !tagsEqual(meta.Attrs, expectedAttrs) {
 		t.Errorf("expected attrs %v, got %v", expectedAttrs, meta.Attrs)
@@ -566,7 +585,7 @@ func TestExtractMeta_AttrsMatchExtract_DriftGuard(t *testing.T) {
 		if metaErr != nil {
 			continue
 		}
-		if !tagsEqual(meta.Attrs, extractResult) {
+		if !tagsEqual(stripExtractMetaInjections(meta.Attrs), extractResult) {
 			t.Errorf("case %d: Attrs drift: meta=%v extract=%v", i, meta.Attrs, extractResult)
 		}
 	}
@@ -667,8 +686,8 @@ tags: [tag1]
 	if _, ok := meta.Attrs["custom-intent"]; ok {
 		t.Errorf("expected Attrs to omit custom-intent when frontmatter has no intent key, got %v", meta.Attrs)
 	}
-	// Existing tag behavior unchanged.
-	expected := map[string]string{"custom-tag1": ""}
+	// Existing tag behavior unchanged (plus the new visible `tags` attr).
+	expected := map[string]string{"custom-tag1": "", "tags": "tag1"}
 	if !tagsEqual(meta.Attrs, expected) {
 		t.Errorf("expected attrs %v, got %v", expected, meta.Attrs)
 	}
@@ -839,6 +858,7 @@ intent: concept
 		"custom-domain":                        "devops",
 		"custom-intent":                        "concept",
 		"custom-last-updated":                  "2024-01-28T07:14:56.539000+00:00",
+		"tags":                                 "application-security,containers,docker,least-privilege,linux,secrets-management,software-composition-analysis,supply-chain",
 	}
 	if !tagsEqual(meta.Attrs, want) {
 		t.Errorf("attrs mismatch\n  got:  %v\n  want: %v", meta.Attrs, want)
@@ -846,9 +866,14 @@ intent: concept
 
 	// Belt-and-braces: every key must be SiYuan-acceptable: `custom-` prefix
 	// + [a-z0-9_-]+ suffix. A single rogue key would atomically nuke the
-	// whole setBlockAttrs call on the real SiYuan API.
+	// whole setBlockAttrs call on the real SiYuan API. The `tags` key is
+	// an exception — SiYuan recognizes it natively (drives the visible
+	// chip rendering), so it's allowed without the `custom-` prefix.
 	const prefix = "custom-"
 	for k := range meta.Attrs {
+		if k == "tags" {
+			continue
+		}
 		if !strings.HasPrefix(k, prefix) {
 			t.Errorf("key %q lacks custom- prefix", k)
 			continue

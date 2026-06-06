@@ -2720,6 +2720,9 @@ func TestSync_TagAttrs_ExactSetFromFrontmatterAndInline(t *testing.T) {
 		"custom-alpha": "1",
 		"custom-beta":  "1",
 		"custom-gamma": "1",
+		// SiYuan's visible-chip variant: the comma-separated list goes out
+		// alongside the custom-<tag> markers so the UI renders the chips.
+		"tags": "alpha,beta,gamma",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("13.4: attrs sent to setBlockAttrs mismatch.\n got:  %v\n want: %v", got, want)
