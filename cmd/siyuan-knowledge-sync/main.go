@@ -44,6 +44,7 @@ func newRootCommand() *cobra.Command {
 		newMCPServerCommand(&configPath),
 		newSchemaCommand(),
 		newMigrateCommand(&configPath),
+		newDevResyncCommand(&configPath),
 	)
 
 	return cmd

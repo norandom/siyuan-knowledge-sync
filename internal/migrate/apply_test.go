@@ -626,7 +626,7 @@ func TestApply_KeepFailureIsolatedByGitMvError(t *testing.T) {
 	// Pre-seed the canonical devops target with an unrelated, already-routed
 	// file `bad.md`. A later OpKeep on `wiki/misc/bad.md` will route to the
 	// same target -> `git mv` refuses (destination already exists).
-	writeGitFile(t, repo, "wiki/Linux & DevOps/bad.md", "# Pre-existing bad.md\n")
+	writeGitFile(t, repo, "Linux & DevOps/bad.md", "# Pre-existing bad.md\n")
 	writeGitFile(t, repo, "wiki/misc/bad.md", "# Source bad.md\nbody\n")
 	writeGitFile(t, repo, "wiki/misc/good.md", "# Good\nbody\n")
 	gitCmd(t, repo, "add", ".")
@@ -693,7 +693,7 @@ func TestApply_KeepFailureIsolatedByGitMvError(t *testing.T) {
 	if got := len(mock.createdDocs); got != 1 {
 		t.Fatalf("mock createdDocs: want 1, got %d (%+v)", got, mock.createdDocs)
 	}
-	if got, want := mock.createdDocs[0].HPath, "/Linux & DevOps/good.md"; got != want {
+	if got, want := mock.createdDocs[0].HPath, "/good.md"; got != want {
 		t.Errorf("mock createdDocs[0].HPath = %q, want %q", got, want)
 	}
 }
@@ -787,7 +787,7 @@ func TestApply_UnsafeRewrite_ProducesStructuredError(t *testing.T) {
 // Setup: two `OpKeep` entries with the SAME canonical target hpath -- same
 // `domain: devops` and same basename `colliding.md`, but different source
 // paths under non-canonical folders. After routing, both want to land at
-// `wiki/Linux & DevOps/colliding.md` (hpath `/Linux & DevOps/colliding.md`).
+// `Linux & DevOps/colliding.md` (hpath `/colliding.md`).
 //
 // V1 behavior (task 3.4's documented deferral): there is NO explicit pre-
 // write hpath probe in `migrate.Apply`. The first entry's `git mv` succeeds
@@ -877,7 +877,7 @@ func TestApply_HpathCollision_V1_IdempotencyProof(t *testing.T) {
 		t.Fatalf("mock createdDocs: want 1 (V1 data-safety), got %d (%+v)",
 			got, mock.createdDocs)
 	}
-	if got, want := mock.createdDocs[0].HPath, "/Linux & DevOps/colliding.md"; got != want {
+	if got, want := mock.createdDocs[0].HPath, "/colliding.md"; got != want {
 		t.Errorf("mock createdDocs[0].HPath = %q, want %q", got, want)
 	}
 
@@ -927,7 +927,7 @@ func TestApply_RewrittenBody_PreservesFrontmatter(t *testing.T) {
 	// canonical devops folder.
 	candidates := []string{
 		filepath.Join(repo, "wiki/misc/a.md"),
-		filepath.Join(repo, "wiki/Linux & DevOps/a.md"),
+		filepath.Join(repo, "Linux & DevOps/a.md"),
 	}
 	var final string
 	for _, p := range candidates {

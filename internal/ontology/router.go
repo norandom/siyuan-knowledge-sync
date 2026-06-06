@@ -71,15 +71,22 @@ type AssetWarning struct {
 	TargetExists bool   // os.Stat(NewResolved) == nil
 }
 
-// canonicalFolders is the hardcoded Domain → wiki folder map.
-// Adding or renaming an entry is a Revalidation Trigger (design.md).
+// canonicalFolders is the hardcoded Domain → canonical-folder map. Each
+// entry is a top-level repo-relative folder so the sync engine's
+// topLevelFolder() resolves it to a SiYuan notebook of the same name —
+// every domain therefore becomes its OWN SiYuan notebook, instead of all
+// domains sharing a single `wiki` notebook with hpath subfolders.
+//
+// Adding, removing, or renaming an entry is a Revalidation Trigger
+// (design.md): test fixtures, e2e hpath assertions, and the SiYuan-side
+// notebook layout all key off these strings.
 var canonicalFolders = map[Domain]string{
-	DevOps:       "wiki/Linux & DevOps",
-	Forensics:    "wiki/Digital Forensics",
-	Security:     "wiki/Security",
-	AIML:         "wiki/AI & ML",
-	SoftwareDev:  "wiki/Software Development",
-	QuantFinance: "wiki/Quant Finance",
+	DevOps:       "Linux & DevOps",
+	Forensics:    "Digital Forensics",
+	Security:     "Security",
+	AIML:         "AI & ML",
+	SoftwareDev:  "Software Development",
+	QuantFinance: "Quant Finance",
 }
 
 // CanonicalFolder returns the canonical wiki folder for d.

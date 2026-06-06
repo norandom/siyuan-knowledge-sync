@@ -812,7 +812,7 @@ func waitForDocAbsent(t *testing.T, notebookID, parentPath, docID string, timeou
 // canonical folder for `domain: devops`, so this test also implicitly
 // exercises the routing path (TestOntology_RoutedFileReachableAtNewHpath
 // asserts routing directly). The notebook here is `wiki` (the top-level
-// folder), and the hpath after routing is `/Linux & DevOps/sample.md`.
+// folder), and the hpath after routing is `/sample.md`.
 func TestOntology_CustomAttrsAppliedOnSync(t *testing.T) {
 	if !containerStarted {
 		t.Skip("siyuan container not available")
@@ -853,13 +853,13 @@ body content
 	// `title:` field via RenameDocByID (siyuan-knowledge-sync Req 13.2),
 	// so the doc's stored hpath uses the title text, not the source
 	// filename. The source frontmatter declared `title: E2E DevOps Sample`,
-	// so SiYuan stores it at `/Linux & DevOps/E2E DevOps Sample` (no .md
+	// so SiYuan stores it at `/E2E DevOps Sample` (no .md
 	// extension on the title leaf — verified against the live container).
 	// `getIDsByHPath` returns empty for paths containing `&`/spaces, so we
 	// resolve via the SQL block index instead.
-	docID := waitForDocAtHPath(t, notebookID, "/Linux & DevOps/E2E DevOps Sample", 5*time.Second)
+	docID := waitForDocAtHPath(t, notebookID, "/E2E DevOps Sample", 5*time.Second)
 	if docID == "" {
-		t.Fatalf("no doc found at title-derived hpath /Linux & DevOps/E2E DevOps Sample in notebook %q after routing sync",
+		t.Fatalf("no doc found at title-derived hpath /E2E DevOps Sample in notebook %q after routing sync",
 			"wiki")
 	}
 
@@ -916,8 +916,8 @@ routed body
 	if _, err := os.Stat(filepath.Join(dir, "wiki/misc/routed.md")); !os.IsNotExist(err) {
 		t.Errorf("source path wiki/misc/routed.md should be gone after route, stat err: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "wiki/Digital Forensics/routed.md")); err != nil {
-		t.Errorf("canonical path wiki/Digital Forensics/routed.md should exist, stat err: %v", err)
+	if _, err := os.Stat(filepath.Join(dir, "wiki/routed.md")); err != nil {
+		t.Errorf("canonical path wiki/routed.md should exist, stat err: %v", err)
 	}
 
 	// Git: exactly one `ontology-route:` commit was created.
@@ -945,9 +945,9 @@ routed body
 	if notebookID == "" {
 		t.Fatalf("notebook %q not found after route sync", "wiki")
 	}
-	docID := waitForDocAtHPath(t, notebookID, "/Digital Forensics/E2E Routed Forensics", 5*time.Second)
+	docID := waitForDocAtHPath(t, notebookID, "/E2E Routed Forensics", 5*time.Second)
 	if docID == "" {
-		t.Fatalf("routed doc not found at title-derived hpath /Digital Forensics/E2E Routed Forensics in notebook %q",
+		t.Fatalf("routed doc not found at title-derived hpath /E2E Routed Forensics in notebook %q",
 			"wiki")
 	}
 	body, _ := exportDoc(t, docID)["content"].(string)

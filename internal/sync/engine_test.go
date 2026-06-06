@@ -2815,11 +2815,11 @@ func TestSync_SchemaGate_AbortsViolatingFile_BatchContinues(t *testing.T) {
 
 	// b.md is created normally. After task 3.2 (pre-sync ontology routing)
 	// landed, a valid (devops, sop) file at the non-canonical path wiki/b.md
-	// is `git mv`'d to wiki/Linux & DevOps/b.md before upload, so Created
+	// is `git mv`'d to Linux & DevOps/b.md before upload, so Created
 	// reports the canonical post-route path. The original 3.1 intent —
 	// "the valid sibling syncs while the violating sibling is aborted" —
 	// is preserved.
-	canonicalB := "wiki/Linux & DevOps/b.md"
+	canonicalB := "Linux & DevOps/b.md"
 	if len(report.Created) != 1 || report.Created[0] != canonicalB {
 		t.Fatalf("Req 2.6 batch-continues: expected created=[%q], got %v (errors=%v)",
 			canonicalB, report.Created, report.Errors)
@@ -2869,8 +2869,8 @@ func TestSync_SchemaGate_AbortsViolatingFile_BatchContinues(t *testing.T) {
 		t.Fatalf("Req 3.5: gate must abort before SiYuan API; expected exactly 1 createDocWithMd (for b.md), got %d: %+v",
 			len(h.createdDocs), h.createdDocs)
 	}
-	if h.createdDocs[0].HPath != "/Linux & DevOps/b.md" {
-		t.Errorf("Req 3.5 + 3.2: expected the one createDocWithMd to be for /Linux & DevOps/b.md (post-route), got hpath %q",
+	if h.createdDocs[0].HPath != "/b.md" {
+		t.Errorf("Req 3.5 + 3.2: expected the one createDocWithMd to be for /b.md (post-route), got hpath %q",
 			h.createdDocs[0].HPath)
 	}
 }
@@ -3012,7 +3012,7 @@ func TestSync_OntologyRouting_MovesAndCommits(t *testing.T) {
 	// Place the file at a non-canonical path under the `wiki` notebook.
 	// Frontmatter declares domain=devops and intent=sop (both valid), so
 	// the gate passes and the router emits RouteMove to
-	// `wiki/Linux & DevOps/foo.md`.
+	// `Linux & DevOps/foo.md`.
 	content := "---\ndomain: devops\nintent: sop\n---\n# Foo\n\nBody.\n"
 	writeGitFile(t, dir, "wiki/misc/foo.md", content)
 	gitCmd(t, dir, "add", "wiki/misc/foo.md")
@@ -3029,7 +3029,7 @@ func TestSync_OntologyRouting_MovesAndCommits(t *testing.T) {
 	}
 
 	// The file is reported as Created under its NEW canonical path.
-	canonical := "wiki/Linux & DevOps/foo.md"
+	canonical := "Linux & DevOps/foo.md"
 	if len(report.Created) != 1 || report.Created[0] != canonical {
 		t.Fatalf("Req 3.2: expected Created=[%q], got %v (errors=%v)", canonical, report.Created, report.Errors)
 	}
@@ -3070,8 +3070,8 @@ func TestSync_OntologyRouting_MovesAndCommits(t *testing.T) {
 	if len(h.createdDocs) != 1 {
 		t.Fatalf("Req 3.2: expected 1 createDocWithMd, got %d: %+v", len(h.createdDocs), h.createdDocs)
 	}
-	if got := h.createdDocs[0].HPath; got != "/Linux & DevOps/foo.md" {
-		t.Errorf("Req 3.2: expected create hpath /Linux & DevOps/foo.md, got %q", got)
+	if got := h.createdDocs[0].HPath; got != "/foo.md" {
+		t.Errorf("Req 3.2: expected create hpath /foo.md, got %q", got)
 	}
 }
 
@@ -3082,7 +3082,7 @@ func TestSync_OntologyRouting_NoopWhenAlreadyCanonical(t *testing.T) {
 	dir := setupGitDir(t)
 	defer os.RemoveAll(dir)
 
-	canonical := "wiki/Linux & DevOps/foo.md"
+	canonical := "Linux & DevOps/foo.md"
 	content := "---\ndomain: devops\nintent: sop\n---\n# Foo\n"
 	writeGitFile(t, dir, canonical, content)
 	gitCmd(t, dir, "add", canonical)
@@ -3142,7 +3142,7 @@ func TestSync_OntologyRouting_AssetWarning(t *testing.T) {
 		t.Fatalf("Sync failed: %v", err)
 	}
 
-	canonical := "wiki/Digital Forensics/case.md"
+	canonical := "Digital Forensics/case.md"
 
 	// File moved, file Created.
 	if len(report.Created) != 1 || report.Created[0] != canonical {
@@ -3233,7 +3233,7 @@ func TestSync_OntologyRouting_StateCollision(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStateTracker: %v", err)
 	}
-	canonical := "wiki/Linux & DevOps/foo.md"
+	canonical := "Linux & DevOps/foo.md"
 	tr.Put(types.SyncEntry{
 		LocalPath:  "wiki/misc/foo.md",
 		SiYuanID:   "src-doc-id",
@@ -3297,7 +3297,7 @@ func TestSync_OntologyRouting_StateCollision(t *testing.T) {
 	// No createDocWithMd / updateBlock for this file: the collision is detected
 	// BEFORE the upload (skip semantics in 3.2).
 	for _, d := range h.createdDocs {
-		if d.HPath == "/misc/foo.md" || d.HPath == "/Linux & DevOps/foo.md" {
+		if d.HPath == "/misc/foo.md" || d.HPath == "/foo.md" {
 			t.Errorf("collision: must not call createDocWithMd, got %+v", d)
 		}
 	}
@@ -3326,7 +3326,7 @@ func TestSync_RouteAndSync_HappyPath(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	// Non-canonical wiki/misc/ path with a (devops, sop) ontology and two
-	// frontmatter tags. The router will route to wiki/Linux & DevOps/foo.md.
+	// frontmatter tags. The router will route to Linux & DevOps/foo.md.
 	content := "---\ndomain: devops\nintent: sop\ntags: [a, b]\n---\n# Foo\n\nBody.\n"
 	writeGitFile(t, dir, "wiki/misc/foo.md", content)
 	gitCmd(t, dir, "add", "wiki/misc/foo.md")
@@ -3341,7 +3341,7 @@ func TestSync_RouteAndSync_HappyPath(t *testing.T) {
 		t.Fatalf("RouteAndSync returned error: %v", err)
 	}
 
-	canonical := "wiki/Linux & DevOps/foo.md"
+	canonical := "Linux & DevOps/foo.md"
 
 	// Filesystem: file moved to canonical path.
 	if _, err := os.Stat(filepath.Join(dir, canonical)); err != nil {
@@ -3357,8 +3357,8 @@ func TestSync_RouteAndSync_HappyPath(t *testing.T) {
 		t.Fatalf("expected exactly 1 createDocWithMd, got %d: %+v", len(h.createdDocs), h.createdDocs)
 	}
 	doc := h.createdDocs[0]
-	if doc.HPath != "/Linux & DevOps/foo.md" {
-		t.Errorf("expected create hpath /Linux & DevOps/foo.md, got %q", doc.HPath)
+	if doc.HPath != "/foo.md" {
+		t.Errorf("expected create hpath /foo.md, got %q", doc.HPath)
 	}
 	if strings.Contains(doc.Markdown, "---") {
 		t.Errorf("Req 13.1: uploaded body still contains '---' frontmatter delimiter: %q", doc.Markdown)
@@ -3457,7 +3457,7 @@ func TestSync_RouteAndSync_SchemaViolationReturnsError(t *testing.T) {
 	if _, ok := allState["wiki/misc/bad.md"]; ok {
 		t.Errorf("expected NO state entry at source path on schema violation, got %v", allState)
 	}
-	if _, ok := allState["wiki/Linux & DevOps/bad.md"]; ok {
+	if _, ok := allState["Linux & DevOps/bad.md"]; ok {
 		t.Errorf("expected NO state entry at target path on schema violation, got %v", allState)
 	}
 }
@@ -3474,7 +3474,7 @@ func TestSync_RouteAndSync_TitleFailure_StillInState(t *testing.T) {
 
 	// Place at canonical path so no routing happens; the focus is the
 	// title-failure path, not routing.
-	canonical := "wiki/Linux & DevOps/x.md"
+	canonical := "Linux & DevOps/x.md"
 	content := "---\ndomain: devops\nintent: sop\ntitle: My Title\n---\n# Body\n"
 	writeGitFile(t, dir, canonical, content)
 	gitCmd(t, dir, "add", canonical)
@@ -3615,7 +3615,7 @@ func TestOntologyGate_Sync_AppliesCustomDomainIntentAttrs(t *testing.T) {
 
 	// Place the file at its canonical folder to keep the focus on the
 	// attrs payload (no routing concerns; that is covered by 3.2 tests).
-	canonical := "wiki/Linux & DevOps/attrs.md"
+	canonical := "Linux & DevOps/attrs.md"
 	content := "---\ndomain: devops\nintent: sop\ntags: [a, b]\n---\n# Body\n"
 	writeGitFile(t, dir, canonical, content)
 	gitCmd(t, dir, "add", canonical)
@@ -3686,7 +3686,7 @@ func TestOntologyGate_Sync_AppliesCustomDomainIntentAttrs(t *testing.T) {
 //
 //	valid_file_routed_with_state_and_commit
 //	  Mirrors TestSync_OntologyRouting_MovesAndCommits — a (devops, sop)
-//	  file at wiki/misc/foo.md is git-mv'd to wiki/Linux & DevOps/foo.md
+//	  file at wiki/misc/foo.md is git-mv'd to Linux & DevOps/foo.md
 //	  with exactly one ontology-route: commit; state tracker reflects the
 //	  new path. (Req 3.2, 3.3.)
 //
@@ -3720,7 +3720,7 @@ func TestOntologyGate_RoutingFlow_FourScenarios(t *testing.T) {
 		}
 
 		// The valid sibling syncs (under its routed canonical path).
-		canonicalB := "wiki/Linux & DevOps/b.md"
+		canonicalB := "Linux & DevOps/b.md"
 		if len(report.Created) != 1 || report.Created[0] != canonicalB {
 			t.Fatalf("expected Created=[%q] (batch continues past gate), got %v (errors=%v)",
 				canonicalB, report.Created, report.Errors)
@@ -3755,8 +3755,8 @@ func TestOntologyGate_RoutingFlow_FourScenarios(t *testing.T) {
 			t.Fatalf("expected exactly 1 createDocWithMd (for the valid sibling), got %d: %+v",
 				len(h.createdDocs), h.createdDocs)
 		}
-		if h.createdDocs[0].HPath != "/Linux & DevOps/b.md" {
-			t.Errorf("expected createDocWithMd at /Linux & DevOps/b.md, got %q", h.createdDocs[0].HPath)
+		if h.createdDocs[0].HPath != "/b.md" {
+			t.Errorf("expected createDocWithMd at /b.md, got %q", h.createdDocs[0].HPath)
 		}
 	})
 
@@ -3779,7 +3779,7 @@ func TestOntologyGate_RoutingFlow_FourScenarios(t *testing.T) {
 			t.Fatalf("Sync failed: %v", err)
 		}
 
-		canonical := "wiki/Linux & DevOps/foo.md"
+		canonical := "Linux & DevOps/foo.md"
 		if len(report.Created) != 1 || report.Created[0] != canonical {
 			t.Fatalf("expected Created=[%q], got %v (errors=%v)",
 				canonical, report.Created, report.Errors)
@@ -3820,8 +3820,8 @@ func TestOntologyGate_RoutingFlow_FourScenarios(t *testing.T) {
 		if len(h.createdDocs) != 1 {
 			t.Fatalf("expected 1 createDocWithMd, got %d", len(h.createdDocs))
 		}
-		if got := h.createdDocs[0].HPath; got != "/Linux & DevOps/foo.md" {
-			t.Errorf("expected create hpath /Linux & DevOps/foo.md, got %q", got)
+		if got := h.createdDocs[0].HPath; got != "/foo.md" {
+			t.Errorf("expected create hpath /foo.md, got %q", got)
 		}
 	})
 
@@ -3829,7 +3829,7 @@ func TestOntologyGate_RoutingFlow_FourScenarios(t *testing.T) {
 		dir := setupGitDir(t)
 		defer os.RemoveAll(dir)
 
-		canonical := "wiki/Linux & DevOps/foo.md"
+		canonical := "Linux & DevOps/foo.md"
 		content := "---\ndomain: devops\nintent: sop\n---\n# Foo\n"
 		writeGitFile(t, dir, canonical, content)
 		gitCmd(t, dir, "add", canonical)
@@ -3883,7 +3883,7 @@ func TestOntologyGate_RoutingFlow_FourScenarios(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewStateTracker: %v", err)
 		}
-		canonical := "wiki/Linux & DevOps/foo.md"
+		canonical := "Linux & DevOps/foo.md"
 		tr.Put(types.SyncEntry{
 			LocalPath:  "wiki/misc/foo.md",
 			SiYuanID:   "src-doc-id",
@@ -3949,7 +3949,7 @@ func TestOntologyGate_RoutingFlow_FourScenarios(t *testing.T) {
 
 		// SiYuan never received a create call for the colliding file.
 		for _, d := range h.createdDocs {
-			if d.HPath == "/misc/foo.md" || d.HPath == "/Linux & DevOps/foo.md" {
+			if d.HPath == "/misc/foo.md" || d.HPath == "/foo.md" {
 				t.Errorf("collision: must not call createDocWithMd, got %+v", d)
 			}
 		}

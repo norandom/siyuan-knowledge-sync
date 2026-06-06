@@ -55,7 +55,7 @@ Parse the JSON. The shape is:
   "domain": {
     "values": ["<one-of-domain.values>", "..."],
     "folders": {
-      "<one-of-domain.values>": "wiki/<canonical folder>",
+      "<one-of-domain.values>": "<canonical folder>",
       "...": "..."
     }
   },
@@ -71,9 +71,11 @@ Rules:
 - Treat `domain.values` and `intent.values` as the only legal values. The skill
   body does not list them; you must read them from this JSON.
 - Treat `domain.folders` as the deterministic map from a declared `domain:`
-  to its wiki-rooted canonical folder. The CLI will `git mv` files there
-  whenever the local path disagrees, so the plan you produce must already
-  target the same folder.
+  to its canonical top-level folder. Each folder becomes its own SiYuan
+  notebook (the engine derives the notebook name from the file's top-level
+  path segment). The CLI will `git mv` files there whenever the local
+  path disagrees, so the plan you produce must already target the same
+  folder.
 - Re-fetch the schema if `version` changes between sessions. Do not rely on
   cached output from a previous run.
 - If the `siyuan-knowledge-sync` binary is not on `PATH`, build it from the
@@ -227,7 +229,7 @@ The skill emits a single JSON document per folder. Its exact shape:
   "entries": [
     {
       "op": "<one of: keep, drop_local, retire_siyuan>",
-      "source_path": "wiki/<relative path>",
+      "source_path": "<top-level-folder>/<relative path>",
       "domain": "<one-of-domain.values, only for op=keep>",
       "intent": "<one-of-intent.values, only for op=keep>",
       "rewritten_body": "<post-cobesy body, only when op=keep AND a rewrite was approved>",

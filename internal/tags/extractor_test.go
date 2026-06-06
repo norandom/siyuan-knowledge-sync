@@ -800,7 +800,7 @@ func TestNormalizeTag_StripsHashtagAndInvalidChars_BugFix(t *testing.T) {
 // integration-level guard: the wiki migration's real input shape
 // (YAML tags as quoted hashtag strings) MUST round-trip through ExtractMeta
 // into attr keys that SiYuan accepts. Captures the exact frontmatter shape
-// from `wiki/Linux & DevOps/Docker explained and illustrated.md`.
+// from `Linux & DevOps/Docker explained and illustrated.md`.
 func TestExtractMeta_HashtagFrontmatterTags_ProducesValidAttrKeys(t *testing.T) {
 	content := []byte(`---
 last_updated: '2024-01-28T07:14:56.539000+00:00'

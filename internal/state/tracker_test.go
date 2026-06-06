@@ -306,7 +306,7 @@ func TestMove_HappyPath_PreservesIdentityFields(t *testing.T) {
 		SyncedAt:   syncedAt,
 	})
 
-	if err := tr.Move("a.md", "wiki/Linux & DevOps/a.md"); err != nil {
+	if err := tr.Move("a.md", "Linux & DevOps/a.md"); err != nil {
 		t.Fatalf("Move returned unexpected error: %v", err)
 	}
 
@@ -314,9 +314,9 @@ func TestMove_HappyPath_PreservesIdentityFields(t *testing.T) {
 		t.Error("expected old key 'a.md' to be gone after Move")
 	}
 
-	got, ok := tr.Get("wiki/Linux & DevOps/a.md")
+	got, ok := tr.Get("Linux & DevOps/a.md")
 	if !ok {
-		t.Fatal("expected new key 'wiki/Linux & DevOps/a.md' to be present after Move")
+		t.Fatal("expected new key 'Linux & DevOps/a.md' to be present after Move")
 	}
 	if got.SiYuanID != "20240315093000-abcdef" {
 		t.Errorf("SiYuanID not preserved: got %q want %q", got.SiYuanID, "20240315093000-abcdef")
@@ -327,8 +327,8 @@ func TestMove_HappyPath_PreservesIdentityFields(t *testing.T) {
 	if !got.SyncedAt.Equal(syncedAt) {
 		t.Errorf("SyncedAt not preserved: got %v want %v", got.SyncedAt, syncedAt)
 	}
-	if got.LocalPath != "wiki/Linux & DevOps/a.md" {
-		t.Errorf("LocalPath not updated: got %q want %q", got.LocalPath, "wiki/Linux & DevOps/a.md")
+	if got.LocalPath != "Linux & DevOps/a.md" {
+		t.Errorf("LocalPath not updated: got %q want %q", got.LocalPath, "Linux & DevOps/a.md")
 	}
 }
 
@@ -439,7 +439,7 @@ func TestMove_PersistenceRoundTrip(t *testing.T) {
 		SyncedAt:   syncedAt,
 	})
 
-	if err := tr.Move("a.md", "wiki/Linux & DevOps/a.md"); err != nil {
+	if err := tr.Move("a.md", "Linux & DevOps/a.md"); err != nil {
 		t.Fatalf("Move failed: %v", err)
 	}
 	if err := tr.Save(); err != nil {
@@ -454,9 +454,9 @@ func TestMove_PersistenceRoundTrip(t *testing.T) {
 	if _, ok := reloaded.Get("a.md"); ok {
 		t.Error("reloaded state should not contain old key 'a.md'")
 	}
-	got, ok := reloaded.Get("wiki/Linux & DevOps/a.md")
+	got, ok := reloaded.Get("Linux & DevOps/a.md")
 	if !ok {
-		t.Fatal("reloaded state missing new key 'wiki/Linux & DevOps/a.md'")
+		t.Fatal("reloaded state missing new key 'Linux & DevOps/a.md'")
 	}
 	if got.SiYuanID != "id-move-rt" {
 		t.Errorf("SiYuanID lost across save/reload: got %q", got.SiYuanID)

@@ -19,12 +19,12 @@ func TestCanonicalFolder_AllDomains(t *testing.T) {
 		domain Domain
 		want   string
 	}{
-		{DevOps, "wiki/Linux & DevOps"},
-		{Forensics, "wiki/Digital Forensics"},
-		{Security, "wiki/Security"},
-		{AIML, "wiki/AI & ML"},
-		{SoftwareDev, "wiki/Software Development"},
-		{QuantFinance, "wiki/Quant Finance"},
+		{DevOps, "Linux & DevOps"},
+		{Forensics, "Digital Forensics"},
+		{Security, "Security"},
+		{AIML, "AI & ML"},
+		{SoftwareDev, "Software Development"},
+		{QuantFinance, "Quant Finance"},
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.domain), func(t *testing.T) {
@@ -46,8 +46,8 @@ func TestCanonicalFolder_CoversEveryEnum(t *testing.T) {
 		if folder == "" {
 			t.Fatalf("CanonicalFolder(%q) returned empty string", d)
 		}
-		if !strings.HasPrefix(folder, "wiki/") {
-			t.Fatalf("CanonicalFolder(%q) = %q, expected to start with wiki/", d, folder)
+		if strings.Contains(folder, "/") {
+			t.Fatalf("CanonicalFolder(%q) = %q, expected a top-level folder (no slash) — each domain owns its own SiYuan notebook", d, folder)
 		}
 	}
 }
@@ -69,7 +69,7 @@ func TestCanonicalFolder_PanicsOnUnknownDomain(t *testing.T) {
 // canonical folder yields RouteNoop with empty TargetPath. (Requirement 3.6)
 func TestRoute_AlreadyCanonical(t *testing.T) {
 	r := Router{}
-	local := "wiki/Linux & DevOps/foo.md"
+	local := "Linux & DevOps/foo.md"
 	got := r.Route(DevOps, local, nil)
 	if got.Action != RouteNoop {
 		t.Fatalf("Action = %v, want RouteNoop", got.Action)
@@ -90,7 +90,7 @@ func TestRoute_AlreadyCanonical(t *testing.T) {
 // (RouteNoop). The router does not flatten existing organization. (Requirement 3.6)
 func TestRoute_AlreadyDeeperUnderCanonical(t *testing.T) {
 	r := Router{}
-	local := "wiki/Linux & DevOps/sub/foo.md"
+	local := "Linux & DevOps/sub/foo.md"
 	got := r.Route(DevOps, local, nil)
 	if got.Action != RouteNoop {
 		t.Fatalf("Action = %v, want RouteNoop (already under canonical subtree)", got.Action)
@@ -110,7 +110,7 @@ func TestRoute_OutsideCanonicalMovesToCanonical(t *testing.T) {
 	if got.Action != RouteMove {
 		t.Fatalf("Action = %v, want RouteMove", got.Action)
 	}
-	want := "wiki/Linux & DevOps/foo.md"
+	want := "Linux & DevOps/foo.md"
 	if got.TargetPath != want {
 		t.Fatalf("TargetPath = %q, want %q (basename only, not subdirectory)", got.TargetPath, want)
 	}
@@ -139,7 +139,7 @@ func TestRoute_AssetWarning_BasicMove(t *testing.T) {
 		t.Fatalf("Reference = %q, want %q", w.Reference, "assets/foo.png")
 	}
 	wantOld := filepath.ToSlash(filepath.Join("legacy/Hosting", "assets/foo.png"))
-	wantNew := filepath.ToSlash(filepath.Join("wiki/Linux & DevOps", "assets/foo.png"))
+	wantNew := filepath.ToSlash(filepath.Join("Linux & DevOps", "assets/foo.png"))
 	if filepath.ToSlash(w.OldResolved) != wantOld {
 		t.Fatalf("OldResolved = %q, want %q", w.OldResolved, wantOld)
 	}
@@ -222,12 +222,12 @@ func TestRoute_AssetWarning_TargetExistsTrue(t *testing.T) {
 	r := Router{}
 	tmp := t.TempDir()
 
-	// Lay out tmp/legacy/Hosting/foo.md and tmp/wiki/Linux & DevOps/assets/foo.png.
+	// Lay out tmp/legacy/Hosting/foo.md and tmp/assets/foo.png.
 	srcDir := filepath.Join(tmp, "legacy", "Hosting")
 	if err := os.MkdirAll(srcDir, 0o755); err != nil {
 		t.Fatalf("mkdir src: %v", err)
 	}
-	dstAssetDir := filepath.Join(tmp, "wiki", "Linux & DevOps", "assets")
+	dstAssetDir := filepath.Join(tmp, "Linux & DevOps", "assets")
 	if err := os.MkdirAll(dstAssetDir, 0o755); err != nil {
 		t.Fatalf("mkdir dst asset: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestRoute_AssetWarning_TargetExistsTrue(t *testing.T) {
 // paths are unchanged, so nothing could break).
 func TestRoute_Noop_NoAssetWarnings(t *testing.T) {
 	r := Router{}
-	local := "wiki/Linux & DevOps/foo.md"
+	local := "Linux & DevOps/foo.md"
 	body := []byte("![](assets/foo.png)\n[link](other/bar.md)\n")
 	got := r.Route(DevOps, local, body)
 	if got.Action != RouteNoop {
@@ -288,8 +288,8 @@ func TestRoute_QuantFinance_CanonicalRouting(t *testing.T) {
 	if got.Action != RouteMove {
 		t.Fatalf("Action = %v, want RouteMove", got.Action)
 	}
-	if got.TargetPath != "wiki/Quant Finance/bond.md" {
-		t.Fatalf("TargetPath = %q, want %q", got.TargetPath, "wiki/Quant Finance/bond.md")
+	if got.TargetPath != "Quant Finance/bond.md" {
+		t.Fatalf("TargetPath = %q, want %q", got.TargetPath, "Quant Finance/bond.md")
 	}
 }
 
@@ -328,7 +328,7 @@ func (d *RouteDecision) sortWarningsByRef() {
 // location, so the router must not emit AssetWarnings for them.
 //
 // Bug surfaced by the real wiki migration of
-// `wiki/Linux & DevOps/Docker explained and illustrated.md`: its
+// `Linux & DevOps/Docker explained and illustrated.md`: its
 // auto-generated TOC contained 10 `[Section](#anchor)` links, all of which
 // were incorrectly classified as broken asset refs, polluting stderr with
 // 10 spurious warnings per file.
@@ -354,7 +354,7 @@ func TestRoute_AnchorRefs_NotClassifiedAsAssetWarning_BugFix(t *testing.T) {
 // not against the process working directory.
 //
 // Bug surfaced by the real wiki migration: assets had been pre-migrated to
-// `wiki/Linux & DevOps/attachments/*.png` (present on disk), but the
+// `Linux & DevOps/attachments/*.png` (present on disk), but the
 // router's `os.Stat` ran with a cwd of the pocket-know dev tree, not the
 // wiki repo root, so every probe returned false. The Docker note's per-
 // entry error report listed 5 phantom "target_exists=false" warnings on
@@ -362,8 +362,8 @@ func TestRoute_AnchorRefs_NotClassifiedAsAssetWarning_BugFix(t *testing.T) {
 func TestRoute_TargetExistsProbe_UsesRepoPath_WhenSet_BugFix(t *testing.T) {
 	repoRoot := t.TempDir()
 	// Place an asset at the path the route would resolve to AFTER the move.
-	// The file lives under repoRoot at `wiki/Linux & DevOps/attachments/p.png`.
-	canonicalAssetDir := filepath.Join(repoRoot, "wiki", "Linux & DevOps", "attachments")
+	// The file lives under repoRoot at `Linux & DevOps/attachments/p.png`.
+	canonicalAssetDir := filepath.Join(repoRoot, "Linux & DevOps", "attachments")
 	if err := os.MkdirAll(canonicalAssetDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -374,7 +374,7 @@ func TestRoute_TargetExistsProbe_UsesRepoPath_WhenSet_BugFix(t *testing.T) {
 	// Source file (pre-move) lives at the legacy path; body references the
 	// asset relatively as `attachments/p.png` (the post-rewrite shape from
 	// cobesy).
-	local := "wiki/Automation (DevOps)/Containers/note.md"
+	local := "Automation (DevOps)/Containers/note.md"
 	body := []byte("![](attachments/p.png)\n")
 
 	r := NewRouter(repoRoot)
