@@ -14,10 +14,13 @@ import (
 var inlineTagRe = regexp.MustCompile(`(?:\A|\s)#([\pL\pN][\pL\pN_-]*)`)
 
 type frontmatterData struct {
-	Title  yaml.Node `yaml:"title"`
-	Tags   yaml.Node `yaml:"tags"`
-	Domain yaml.Node `yaml:"domain"`
-	Intent yaml.Node `yaml:"intent"`
+	Title       yaml.Node `yaml:"title"`
+	Tags        yaml.Node `yaml:"tags"`
+	Domain      yaml.Node `yaml:"domain"`
+	Intent      yaml.Node `yaml:"intent"`
+	LastUpdated yaml.Node `yaml:"last_updated"`
+	Date        yaml.Node `yaml:"date"`
+	OriginalDate yaml.Node `yaml:"original_date"`
 }
 
 // Meta is the result of a single-pass frontmatter + tag extraction.
@@ -40,7 +43,7 @@ func NewTagExtractor() *TagExtractor {
 }
 
 func (e *TagExtractor) Extract(content []byte) (map[string]string, error) {
-	_, _, _, _, attrs, err := e.extract(content)
+	_, _, _, _, _, attrs, err := e.extract(content)
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +61,7 @@ func (e *TagExtractor) Extract(content []byte) (map[string]string, error) {
 // sync engine picks them up unchanged. The legacy Extract entry point used by
 // the compliance audit is intentionally unaffected by this injection.
 func (e *TagExtractor) ExtractMeta(content []byte) (Meta, error) {
-	title, body, domain, intent, attrs, err := e.extract(content)
+	title, body, domain, intent, lastUpdated, attrs, err := e.extract(content)
 	if err != nil {
 		return Meta{}, err
 	}
@@ -68,6 +71,13 @@ func (e *TagExtractor) ExtractMeta(content []byte) (Meta, error) {
 	if intent != "" {
 		attrs["custom-intent"] = intent
 	}
+	// Forward the source-of-truth timestamp from frontmatter as a queryable
+	// block attribute. SiYuan's own `updated` field is the in-SiYuan
+	// modification time and gets clobbered on every sync; this preserves
+	// when the original work was actually done.
+	if lastUpdated != "" {
+		attrs["custom-last-updated"] = lastUpdated
+	}
 	return Meta{Title: title, Body: body, Attrs: attrs, Domain: domain, Intent: intent}, nil
 }
 
@@ -76,7 +86,7 @@ func (e *TagExtractor) ExtractMeta(content []byte) (Meta, error) {
 // It returns the raw domain/intent scalars to ExtractMeta but does NOT inject
 // them into the attribute map itself — Extract's audit-path output must remain
 // tag-only.
-func (e *TagExtractor) extract(content []byte) (title string, body []byte, domain string, intent string, attrs map[string]string, err error) {
+func (e *TagExtractor) extract(content []byte) (title string, body []byte, domain string, intent string, lastUpdated string, attrs map[string]string, err error) {
 	result := make(map[string]string)
 
 	fmBytes, body := splitFrontmatter(content)
@@ -84,11 +94,12 @@ func (e *TagExtractor) extract(content []byte) (title string, body []byte, domai
 	if fmBytes != nil {
 		parsed, perr := parseFrontmatter(fmBytes)
 		if perr != nil {
-			return "", nil, "", "", nil, perr
+			return "", nil, "", "", "", nil, perr
 		}
 		title = parsed.title
 		domain = parsed.domain
 		intent = parsed.intent
+		lastUpdated = parsed.lastUpdated
 		for _, tag := range parsed.tags {
 			tag = normalizeTag(tag)
 			if tag != "" {
@@ -105,7 +116,7 @@ func (e *TagExtractor) extract(content []byte) (title string, body []byte, domai
 		}
 	}
 
-	return title, body, domain, intent, result, nil
+	return title, body, domain, intent, lastUpdated, result, nil
 }
 
 func splitFrontmatter(content []byte) ([]byte, []byte) {
@@ -144,10 +155,11 @@ func splitFrontmatter(content []byte) ([]byte, []byte) {
 // callers can pull scalars (title/domain/intent) and the tag list without
 // re-parsing.
 type parsedFrontmatter struct {
-	title  string
-	tags   []string
-	domain string
-	intent string
+	title       string
+	tags        []string
+	domain      string
+	intent      string
+	lastUpdated string // first non-empty of last_updated > date > original_date
 }
 
 // parseFrontmatter unmarshals the YAML frontmatter once and returns the title,
@@ -159,11 +171,24 @@ func parseFrontmatter(fmBytes []byte) (parsedFrontmatter, error) {
 		return parsedFrontmatter{}, err
 	}
 
+	// last_updated takes precedence; date and original_date are fall-backs
+	// for older fixtures. The engine forwards this value as the
+	// `custom-last-updated` block attribute so SiYuan can show + sort by
+	// the original timestamp regardless of when the doc was synced.
+	lastUpdated := scalarValue(fm.LastUpdated)
+	if lastUpdated == "" {
+		lastUpdated = scalarValue(fm.Date)
+	}
+	if lastUpdated == "" {
+		lastUpdated = scalarValue(fm.OriginalDate)
+	}
+
 	return parsedFrontmatter{
-		title:  scalarValue(fm.Title),
-		tags:   tagsFromNode(fm.Tags),
-		domain: scalarValue(fm.Domain),
-		intent: scalarValue(fm.Intent),
+		title:       scalarValue(fm.Title),
+		tags:        tagsFromNode(fm.Tags),
+		domain:      scalarValue(fm.Domain),
+		intent:      scalarValue(fm.Intent),
+		lastUpdated: lastUpdated,
 	}, nil
 }
 

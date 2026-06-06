@@ -172,6 +172,12 @@ func (e *SyncEngine) processFile(ctx context.Context, report *types.SyncReport, 
 		decision := router.Route(ontology.Domain(meta.Domain), tf.Path, meta.Body)
 
 		for _, w := range decision.AssetWarnings {
+			if w.TargetExists {
+				// The asset is already at its new resolved location
+				// (pre-migrated by the caller); the move is fine.
+				// Reporting this as an error would mask the real failures.
+				continue
+			}
 			report.Errors = append(report.Errors, types.SyncError{
 				File: tf.Path,
 				Message: fmt.Sprintf(
@@ -251,7 +257,10 @@ func (e *SyncEngine) processFile(ctx context.Context, report *types.SyncReport, 
 	// path. Without this, markdown like `![](attachments/foo.png)` reaches
 	// SiYuan unresolved and the image renders broken. Per-asset failures
 	// are non-fatal (same policy as tag attrs).
-	uploadBody, assetErrs := e.uploadAndRewriteAssets(ctx, tf.Path, filepath.Dir(fullPath), uploadBody)
+	// Re-derive the file's current directory from tf.Path — the routing
+	// step above may have updated tf.Path to the canonical location, but
+	// fullPath was computed once at processFile entry and is now stale.
+	uploadBody, assetErrs := e.uploadAndRewriteAssets(ctx, tf.Path, filepath.Dir(filepath.Join(e.repoPath, tf.Path)), uploadBody)
 	report.Errors = append(report.Errors, assetErrs...)
 
 	// Step 3: create or update first to establish the doc ID.

@@ -493,7 +493,8 @@ date: 2026-01-01
 	}
 
 	expectedAttrs := map[string]string{
-		"custom-only-tag": "",
+		"custom-only-tag":     "",
+		"custom-last-updated": "2026-01-01",
 	}
 	if !tagsEqual(meta.Attrs, expectedAttrs) {
 		t.Errorf("expected attrs %v, got %v", expectedAttrs, meta.Attrs)
@@ -837,6 +838,7 @@ intent: concept
 		"custom-application-security":          "",
 		"custom-domain":                        "devops",
 		"custom-intent":                        "concept",
+		"custom-last-updated":                  "2024-01-28T07:14:56.539000+00:00",
 	}
 	if !tagsEqual(meta.Attrs, want) {
 		t.Errorf("attrs mismatch\n  got:  %v\n  want: %v", meta.Attrs, want)

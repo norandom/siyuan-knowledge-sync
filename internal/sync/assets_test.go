@@ -19,6 +19,11 @@ func TestExtractAssetRefs_FiltersAndDedupes(t *testing.T) {
 		"[wiki](<some-wiki-link>)",                     // skip (<-prefixed)
 		"![rel-no-prefix](sibling.png)",                // keep (relative)
 		"[link-not-image](deeper/dir/diagram.svg)",     // keep
+		"[cross-doc](Other Doc.md)",                    // skip (.md cross-link, not asset)
+		"[encoded](Zero%20Trust.md)",                   // skip (.md cross-link)
+		"[truncated](Kubernetes,%20Istio%20and%20Knative%20(2020", // skip (regex truncated at `(`, not a whitelisted ext)
+		"![video](attachments/talk.mp4)",               // keep (mp4 whitelisted)
+		"[archive](attachments/setup.zip)",             // keep (zip whitelisted)
 	}, "\n"))
 	got := extractAssetRefs(body)
 	want := []string{
@@ -26,6 +31,8 @@ func TestExtractAssetRefs_FiltersAndDedupes(t *testing.T) {
 		"attachments/b.png",
 		"sibling.png",
 		"deeper/dir/diagram.svg",
+		"attachments/talk.mp4",
+		"attachments/setup.zip",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("extractAssetRefs:\n  got:  %v\n  want: %v", got, want)

@@ -36,6 +36,27 @@ import (
 func (e *SyncEngine) ensureIntentIndices(ctx context.Context, boxID, domainName string) error {
 	for _, intent := range ontology.AllIntents() {
 		intentStr := string(intent)
+		hpath := fmt.Sprintf("/_%s_index.md", intentStr)
+
+		// SiYuan's createDocWithMd is NOT idempotent by hpath: each call
+		// makes a fresh doc, even if the hpath already exists. Without an
+		// explicit cleanup step the index docs pile up — every sync run
+		// adds 5 more, one per intent. So we lookup any docs already at
+		// this hpath via SQL and remove them before re-creating. Errors
+		// during cleanup are tolerated (the create itself will surface
+		// any persistent state issue).
+		existing, err := e.client.SQLQuery(ctx, fmt.Sprintf(
+			"SELECT id FROM blocks WHERE type='d' AND box='%s' AND hpath='%s'",
+			boxID, hpath,
+		))
+		if err == nil {
+			for _, row := range existing {
+				if id, ok := row["id"].(string); ok && id != "" {
+					_ = e.client.RemoveDocByID(ctx, id)
+				}
+			}
+		}
+
 		// Query the docs in this notebook that carry this intent. The
 		// ial-LIKE pattern matches the custom-intent IAL attribute SiYuan
 		// stores per the engine's setBlockAttrs call. Content for type='d'
@@ -48,7 +69,6 @@ func (e *SyncEngine) ensureIntentIndices(ctx context.Context, boxID, domainName 
 		if err != nil {
 			return fmt.Errorf("query %s docs: %w", intentStr, err)
 		}
-		hpath := fmt.Sprintf("/_%s_index.md", intentStr)
 		body := buildIndexBody(intentStr, domainName, rows)
 		if _, err := e.client.CreateDocWithMd(ctx, boxID, hpath, body); err != nil {
 			return fmt.Errorf("ensure %s index: %w", intentStr, err)

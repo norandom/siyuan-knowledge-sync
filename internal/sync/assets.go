@@ -56,7 +56,30 @@ func isLocalAssetRef(ref string) bool {
 	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "mailto:") {
 		return false
 	}
-	return true
+	// Whitelist binary asset extensions. Anything else (markdown cross-
+	// links, URL-encoded paths the regex truncated mid-string, embedded
+	// configuration snippets) is NOT an upload candidate. A whitelist is
+	// safer than a blacklist here because the cobesy rewrite path frequently
+	// emits cross-doc links like `[Other Doc](Other%20Doc.md)` or
+	// `[K8s Istio (2020)](K8s%20Istio%20(2020).md)` where the inner `(`
+	// makes the markdown regex stop early at the orphan `)` and the
+	// extracted suffix loses its `.md`.
+	for _, ext := range assetExtensions {
+		if strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+// assetExtensions enumerates the suffixes the engine treats as binary
+// uploadable assets. Order is presentation only; lookups are linear.
+var assetExtensions = []string{
+	".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp", ".ico",
+	".mp4", ".webm", ".mov", ".m4v",
+	".pdf",
+	".drawio",
+	".zip", ".tar", ".gz", ".tgz",
 }
 
 // rewriteAssetRefs replaces `(<old>)` with `(<new>)` inside markdown ref
@@ -93,18 +116,16 @@ func (e *SyncEngine) uploadAndRewriteAssets(ctx context.Context, file, fileDir, 
 	for _, ref := range refs {
 		localPath := filepath.Join(fileDir, ref)
 		if _, err := os.Stat(localPath); err != nil {
-			errs = append(errs, types.SyncError{
-				File:    file,
-				Message: fmt.Sprintf("asset %q not found at %s; leaving body reference unchanged", ref, localPath),
-			})
+			// Asset missing on disk: print to stderr but DON'T fail the
+			// entry. The body keeps its original ref (renders broken in
+			// SiYuan UI) — same data-safety posture as setBlockAttrs
+			// failures. Real failures (createDoc, gitMv) are still fatal.
+			fmt.Fprintf(os.Stderr, "warning: asset %q for %s not found at %s; leaving body ref unchanged\n", ref, file, localPath)
 			continue
 		}
 		stored, err := e.client.UploadAsset(ctx, localPath)
 		if err != nil {
-			errs = append(errs, types.SyncError{
-				File:    file,
-				Message: fmt.Sprintf("upload asset %q failed: %v; leaving body reference unchanged", ref, err),
-			})
+			fmt.Fprintf(os.Stderr, "warning: upload asset %q for %s failed: %v\n", ref, file, err)
 			continue
 		}
 		mapping[ref] = stored
