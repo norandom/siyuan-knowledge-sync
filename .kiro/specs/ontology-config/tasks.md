@@ -39,7 +39,7 @@
   - _Boundary: internal/ontology_
 
 - [ ] 3. Core — Adjacent boundaries (config decode, compliance check, schema JSON) build out from the new ontology API
-- [ ] 3.1 (P) Add the `ontology:` YAML decode shape to the config package
+- [x] 3.1 (P) Add the `ontology:` YAML decode shape to the config package
   - Extend `internal/config/config.go` with `OntologyConfig`, `OntologyDomain`, `OntologyIntent` decode-target types and an `Ontology *OntologyConfig` field on `Config`
   - Leave `LoadConfig` validation responsibilities unchanged: the loader only decodes the section; validation is `ontology.Configure(opts)`'s job
   - Cover with `internal/config/config_test.go`: a fixture without `ontology:` decodes to `cfg.Ontology == nil`; a fixture with a fully populated `ontology:` section (domains, intents, optional `tags`) decodes to a `*OntologyConfig` whose fields match the YAML literally
