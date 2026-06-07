@@ -249,8 +249,10 @@ tags: [my_tag, my-tag, tag123, MIXEDCase]
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	// `my_tag` and `my-tag` both normalize to `my-tag` (underscores
+	// convert to hyphens since SiYuan rejects `_` in attribute names),
+	// so they collapse to a single map entry.
 	expected := map[string]string{
-		"custom-my_tag":    "",
 		"custom-my-tag":    "",
 		"custom-tag123":    "",
 		"custom-mixedcase": "",
@@ -795,16 +797,16 @@ func TestNormalizeTag_StripsHashtagAndInvalidChars_BugFix(t *testing.T) {
 	}{
 		{"hashtag-prefix simple", "#docker", "docker"},
 		{"hashtag-prefix with hyphens", "#supply-chain", "supply-chain"},
-		{"hashtag-prefix with underscore", "#my_tag", "my_tag"},
+		{"hashtag-prefix with underscore -> hyphen", "#my_tag", "my-tag"},
 		{"multiple leading hashtags", "##weird", "weird"},
 		{"hashtag-only collapses to empty", "#", ""},
-		{"mixed case lowercased", "#MIXED_Case", "mixed_case"},
+		{"mixed case lowercased + underscore -> hyphen", "#MIXED_Case", "mixed-case"},
 		{"spaces become hyphens then hashtag stripped", "#tag with spaces", "tag-with-spaces"},
 		{"embedded hash dropped", "tag#middle", "tagmiddle"},
 		{"punctuation stripped", "tag.with/punct", "tagwithpunct"},
 		{"colon stripped", "ns:tag", "nstag"},
 		{"plus stripped", "c++", "c"},
-		{"already valid passthrough", "my-tag_123", "my-tag_123"},
+		{"underscore -> hyphen passthrough", "my-tag_123", "my-tag-123"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

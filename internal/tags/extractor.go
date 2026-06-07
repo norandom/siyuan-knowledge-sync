@@ -338,11 +338,19 @@ func normalizeTag(tag string) string {
 	tag = strings.ToLower(tag)
 	tag = strings.ReplaceAll(tag, " ", "-")
 	tag = strings.TrimLeft(tag, "#")
+	// SiYuan's attribute-name validator accepts ONLY letters, digits, and
+	// `-` in the suffix after the `custom-` prefix; underscores trip
+	// "attribute name only supports English letters and digits". Convert
+	// underscores to hyphens to preserve the tag's semantic content
+	// (e.g. `pkg_mgr` -> `pkg-mgr`) instead of dropping them.
 	var b strings.Builder
 	b.Grow(len(tag))
 	for _, r := range tag {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
 			b.WriteRune(r)
+		case r == '_':
+			b.WriteRune('-')
 		}
 	}
 	return b.String()
