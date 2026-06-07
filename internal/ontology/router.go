@@ -71,22 +71,47 @@ type AssetWarning struct {
 	TargetExists bool   // os.Stat(NewResolved) == nil
 }
 
-// canonicalFolders is the hardcoded Domain → canonical-folder map. Each
-// entry is a top-level repo-relative folder so the sync engine's
-// topLevelFolder() resolves it to a SiYuan notebook of the same name —
-// every domain therefore becomes its OWN SiYuan notebook, instead of all
-// domains sharing a single `wiki` notebook with hpath subfolders.
+// defaultCanonicalFolders is the compile-time seed for the package-level
+// Domain → canonical-folder map. Each entry is a top-level repo-relative
+// folder so the sync engine's topLevelFolder() resolves it to a SiYuan
+// notebook of the same name — every domain therefore becomes its OWN
+// SiYuan notebook, instead of all domains sharing a single `wiki`
+// notebook with hpath subfolders. This map is the source of truth for the
+// "no configuration section" default behavior (Requirement 6.1); a later
+// Configure(opts) entry point may replace canonicalFolders with operator-
+// supplied values, but the values here remain the fallback used at
+// package init.
 //
 // Adding, removing, or renaming an entry is a Revalidation Trigger
 // (design.md): test fixtures, e2e hpath assertions, and the SiYuan-side
 // notebook layout all key off these strings.
-var canonicalFolders = map[Domain]string{
+var defaultCanonicalFolders = map[Domain]string{
 	DevOps:       "Linux & DevOps",
 	Forensics:    "Digital Forensics",
 	Security:     "Security",
 	AIML:         "AI & ML",
 	SoftwareDev:  "Software Development",
 	QuantFinance: "Quant Finance",
+}
+
+// canonicalFolders is the package-private Domain → canonical-folder map
+// used by every accessor. It is seeded at package init from
+// defaultCanonicalFolders and is mutable: a future Configure(opts) call
+// (added in a later task) replaces this map's contents so
+// Router.CanonicalFolder() reflects the configured ontology. Production
+// reads always go through Router.CanonicalFolder, which reads from this
+// mutable storage rather than the compile-time defaults.
+var canonicalFolders = copyFolderMap(defaultCanonicalFolders)
+
+// copyFolderMap returns a shallow copy of src. Used to seed
+// canonicalFolders from defaultCanonicalFolders at package init so the
+// mutable state never aliases the compile-time defaults.
+func copyFolderMap(src map[Domain]string) map[Domain]string {
+	out := make(map[Domain]string, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
 }
 
 // CanonicalFolder returns the canonical wiki folder for d.

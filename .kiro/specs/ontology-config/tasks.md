@@ -8,7 +8,7 @@
   - Observable completion: every existing test in `internal/ontology` and every downstream consumer's test (audit, sync, migrate, dashboard, schema) passes unchanged because the seeded state matches the prior compile-time values
   - _Requirements: 6.1, 6.2, 7.1_
 
-- [ ] 1.2 Refactor canonical folder routing in `internal/ontology/router.go` to be seeded-then-mutable
+- [x] 1.2 Refactor canonical folder routing in `internal/ontology/router.go` to be seeded-then-mutable
   - Introduce a package-private `defaultCanonicalFolders` map carrying exactly today's six-domain folder map (`devops → "Linux & DevOps"`, `forensics → "Digital Forensics"`, `security → "Security"`, `ai-ml → "AI & ML"`, `software-dev → "Software Development"`, `quant-finance → "Quant Finance"`)
   - Convert `canonicalFolders` from a fixed `var` map into package-private mutable storage initialised at package init from the default map
   - Keep the `Router.CanonicalFolder()` accessor contract unchanged
