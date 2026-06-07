@@ -16,7 +16,7 @@
   - _Requirements: 6.1, 6.2, 7.1_
 
 - [ ] 2. Core — Configure entry point and tag-vocabulary state for the ontology package
-- [ ] 2.1 Add the Configure entry point with full validation and a test-only reset helper
+- [x] 2.1 Add the Configure entry point with full validation and a test-only reset helper
   - Create `internal/ontology/configure.go` exporting `ConfigureDomain`, `ConfigureIntent`, `ConfigureOptions` and `Configure(opts ConfigureOptions) error`
   - Validate domain ids against `^[a-z][a-z0-9-]*$`, reject empty folders, reject folders that start with `_` or `/`, reject duplicate domain ids, reject duplicate canonical folders, validate intent ids against the same charset, reject duplicate intent ids
   - Aggregate every validation failure with `errors.Join` so an operator sees every problem in one run
