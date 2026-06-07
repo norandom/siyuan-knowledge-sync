@@ -1038,3 +1038,121 @@ func TestOntology_RetireSingleDocViaMigrateApply(t *testing.T) {
 		t.Errorf("non-target doc %s should still be present at /keep-me.md in notebook %s", keepDocID, keepNbName)
 	}
 }
+
+// writeConfigWithCustomOntology overwrites the default `.siyuan-sync.yaml`
+// at `dir` with a config that carries an `ontology:` section declaring all
+// six canonical defaults PLUS a new `personal` → `Personal` domain. The five
+// canonical intents are also restated because `Configure(opts)` rejects an
+// empty intents list (the section is "replace, not merge" — Req 1.4).
+//
+// This helper is local to the custom-domain e2e fixture; the shared
+// `writeConfig` helper used by every other test stays untouched so the
+// default-config path keeps exercising the no-`ontology:` codepath (Req 6.2).
+func writeConfigWithCustomOntology(t *testing.T, dir string) {
+	t.Helper()
+	configPath := filepath.Join(dir, ".siyuan-sync.yaml")
+	content := fmt.Sprintf(`endpoint: %q
+token: %q
+repo_path: %q
+autofix: false
+ontology:
+  domains:
+    - id: devops
+      folder: "Linux & DevOps"
+    - id: forensics
+      folder: "Digital Forensics"
+    - id: security
+      folder: "Security"
+    - id: ai-ml
+      folder: "AI & ML"
+    - id: software-dev
+      folder: "Software Development"
+    - id: quant-finance
+      folder: "Quant Finance"
+    - id: personal
+      folder: "Personal"
+  intents:
+    - id: config
+    - id: sop
+    - id: log
+    - id: decision
+    - id: concept
+`, siyuanEndpoint, siyuanToken, dir)
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestOntology_CustomDomainRoutesToConfiguredNotebook verifies Req 5.1 / 6.2 /
+// 7.1 end-to-end: an operator-supplied `ontology:` section in
+// `.siyuan-sync.yaml` adds a new domain (`personal` → `Personal`) on top of
+// the canonical defaults, and a markdown file declaring that custom domain
+// lands in the configured SiYuan notebook with the correct `custom-domain`
+// block attribute.
+//
+// This proves that:
+//   - the `ontology:` section is loaded and applied (Req 5.1 — single effective
+//     ontology surfaced by `Configure(opts)`),
+//   - the additional domain propagates all the way through validation,
+//     routing, notebook creation, and block-attr application (Req 7.1 — every
+//     consumer reads the same effective ontology),
+//   - the existing default-config e2e fixtures stay untouched and keep
+//     exercising the no-`ontology:` path (Req 6.2 — backwards compatibility).
+func TestOntology_CustomDomainRoutesToConfiguredNotebook(t *testing.T) {
+	if !containerStarted {
+		t.Skip("siyuan container not available")
+	}
+
+	dir, cleanup := createTestGitRepo(t)
+	defer cleanup()
+	writeConfigWithCustomOntology(t, dir)
+
+	content := `---
+title: E2E Personal Note
+domain: personal
+intent: log
+---
+# E2E Personal Note
+
+custom-domain body
+`
+	writeFile(t, dir, "personal-area/note.md", content)
+	runCmd(t, dir, "git", "add", "personal-area/note.md")
+	runCmd(t, dir, "git", "commit", "-m", "personal domain sample")
+
+	stdout, stderr := runBinary(t, dir, "sync")
+	t.Logf("personal-domain sync stdout: %s", stdout)
+	t.Logf("personal-domain sync stderr: %s", stderr)
+
+	// The operator-supplied `personal` domain is mapped to the `Personal`
+	// folder, which becomes a top-level SiYuan notebook (one-notebook-per-
+	// domain architecture). If the section was ignored or merged incorrectly,
+	// the notebook would not exist.
+	notebookID := notebookIDByName(t, "Personal")
+	if notebookID == "" {
+		t.Fatalf("notebook %q not found after sync — operator-supplied ontology did not propagate", "Personal")
+	}
+
+	// The engine renames the SiYuan doc to the frontmatter title via
+	// RenameDocByID, so the stored hpath uses the title text rather than the
+	// source filename. Resolve through the SQL block index, which is more
+	// robust than `/api/filetree/getIDsByHPath` for paths containing spaces.
+	docID := waitForDocAtHPath(t, notebookID, "/E2E Personal Note", 5*time.Second)
+	if docID == "" {
+		t.Fatalf("doc not found at /E2E Personal Note in notebook %q after custom-domain sync",
+			"Personal")
+	}
+
+	attrResult := siyuanAPI(t, "/api/attr/getBlockAttrs",
+		fmt.Sprintf(`{"id":%q}`, docID))
+	if code, ok := attrResult["code"].(float64); !ok || code != 0 {
+		t.Fatalf("getBlockAttrs failed: %v", attrResult)
+	}
+	attrs, _ := attrResult["data"].(map[string]any)
+	if attrs == nil {
+		t.Fatalf("getBlockAttrs returned nil data for doc %s", docID)
+	}
+	if got := attrs["custom-domain"]; got != "personal" {
+		t.Errorf("custom-domain = %v, want %q (full attrs: %v)", got, "personal", attrs)
+	}
+}

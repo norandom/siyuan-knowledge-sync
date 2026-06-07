@@ -77,7 +77,7 @@
   - _Depends: 2.1, 3.1_
 
 - [ ] 5. Validation — end-to-end non-default ontology coverage
-- [ ] 5.1 Add a non-default-ontology e2e fixture
+- [x] 5.1 Add a non-default-ontology e2e fixture
   - Extend the e2e harness (in `e2e/`) with a fixture that ships a `.siyuan-sync.yaml` containing an `ontology:` section adding a new `personal` domain mapped to a `Personal` folder, plus the standard defaults
   - The fixture file declares `domain: personal` in its frontmatter and asserts that after `sync` it lands in the `Personal` SiYuan notebook with `custom-domain: personal` set
   - Leave every existing default-config e2e fixture untouched to prove backwards compatibility (Requirement 6.2)
