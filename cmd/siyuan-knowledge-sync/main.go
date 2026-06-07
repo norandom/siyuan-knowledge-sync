@@ -14,6 +14,7 @@ import (
 	"siyuan-knowledge-sync/internal/config"
 	"siyuan-knowledge-sync/internal/git"
 	"siyuan-knowledge-sync/internal/mcp"
+	"siyuan-knowledge-sync/internal/ontology"
 	"siyuan-knowledge-sync/internal/siyuan"
 	"siyuan-knowledge-sync/internal/state"
 	"siyuan-knowledge-sync/internal/sync"
@@ -33,6 +34,34 @@ func newRootCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "siyuan-knowledge-sync",
 		Short: "Sync git-tracked markdown notes with SiYuan",
+		// PersistentPreRunE fires once per CLI invocation, before any
+		// subcommand's RunE. This is where we apply an operator's optional
+		// `ontology:` overrides so subcommands that never call loadConfig
+		// (notably `schema --json`) still see the configured enums.
+		//
+		// Failure model:
+		//   - Config file missing or unreadable: silently treated as "no
+		//     overrides" so help, schema, and other config-independent
+		//     subcommands keep working. Subcommands that need the config
+		//     re-raise the same error in their own RunE.
+		//   - Config decoded, no `ontology:` section: compile-time defaults
+		//     stay in effect; Configure is not called.
+		//   - Config decoded with `ontology:` section: translated to
+		//     ConfigureOptions and passed to ontology.Configure. Any
+		//     validation error is surfaced through cobra so the process
+		//     exits non-zero before any subcommand performs side effects.
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.LoadConfig(configPath)
+			if err != nil {
+				// Silent skip: let subcommands that need a config raise
+				// the error themselves. Help, schema, etc. proceed.
+				return nil
+			}
+			if cfg.Ontology == nil {
+				return nil
+			}
+			return ontology.Configure(toConfigureOptions(cfg.Ontology))
+		},
 	}
 
 	cmd.PersistentFlags().StringVarP(&configPath, "config", "c", ".siyuan-sync.yaml", "path to config file")
@@ -48,6 +77,30 @@ func newRootCommand() *cobra.Command {
 	)
 
 	return cmd
+}
+
+// toConfigureOptions translates the decoded `ontology:` config section into
+// the validated ConfigureOptions shape expected by ontology.Configure. It
+// preserves slice order and the nil-vs-non-nil-empty distinction on Tags
+// so the open/closed/closed-but-empty vocabulary semantics survive the hop
+// from YAML decode to package state.
+func toConfigureOptions(oc *config.OntologyConfig) ontology.ConfigureOptions {
+	if oc == nil {
+		return ontology.ConfigureOptions{}
+	}
+	domains := make([]ontology.ConfigureDomain, len(oc.Domains))
+	for i, d := range oc.Domains {
+		domains[i] = ontology.ConfigureDomain{ID: d.ID, Folder: d.Folder}
+	}
+	intents := make([]ontology.ConfigureIntent, len(oc.Intents))
+	for i, in := range oc.Intents {
+		intents[i] = ontology.ConfigureIntent{ID: in.ID}
+	}
+	return ontology.ConfigureOptions{
+		Domains: domains,
+		Intents: intents,
+		Tags:    oc.Tags,
+	}
 }
 
 func loadConfig(path string) (*config.Config, error) {

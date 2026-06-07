@@ -66,7 +66,7 @@
   - _Depends: 2.2_
 
 - [ ] 4. Integration — wire ontology load into CLI startup
-- [ ] 4.1 Call `ontology.Configure()` once in `cmd/siyuan-knowledge-sync/main.go` after `LoadConfig`
+- [x] 4.1 Call `ontology.Configure()` once in `cmd/siyuan-knowledge-sync/main.go` after `LoadConfig`
   - After `LoadConfig` returns and before any subcommand `RunE` runs: if `cfg.Ontology != nil`, build a `ConfigureOptions` by translating the YAML types into the ontology types and call `ontology.Configure(opts)`
   - On non-nil error, print the structured error to stderr and exit non-zero before any SiYuan call, any git mutation, or any state-tracker write
   - When `cfg.Ontology == nil`, do not call `Configure`; the compiled-in defaults stay in effect

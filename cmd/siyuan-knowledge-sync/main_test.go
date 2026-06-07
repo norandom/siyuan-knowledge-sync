@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"siyuan-knowledge-sync/internal/config"
 	"siyuan-knowledge-sync/internal/migrate"
 	"siyuan-knowledge-sync/internal/ontology"
 )
@@ -702,5 +703,256 @@ func TestMigrateApply_MissingPlanFile(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "read plan") {
 		t.Errorf("expected error containing 'read plan', got: %v", err)
+	}
+}
+
+// --- Task 4.1: ontology.Configure wiring tests ---
+
+func TestToConfigureOptions_TranslatesShape(t *testing.T) {
+	t.Run("populated_tags", func(t *testing.T) {
+		oc := &config.OntologyConfig{
+			Domains: []config.OntologyDomain{
+				{ID: "alpha", Folder: "Alpha"},
+				{ID: "beta", Folder: "Beta"},
+			},
+			Intents: []config.OntologyIntent{
+				{ID: "note"},
+				{ID: "draft"},
+			},
+			Tags: []string{"foo", "bar"},
+		}
+
+		opts := toConfigureOptions(oc)
+
+		if len(opts.Domains) != 2 {
+			t.Fatalf("Domains len = %d, want 2", len(opts.Domains))
+		}
+		if opts.Domains[0].ID != "alpha" || opts.Domains[0].Folder != "Alpha" {
+			t.Errorf("Domains[0] = %+v, want {ID:alpha Folder:Alpha}", opts.Domains[0])
+		}
+		if opts.Domains[1].ID != "beta" || opts.Domains[1].Folder != "Beta" {
+			t.Errorf("Domains[1] = %+v, want {ID:beta Folder:Beta}", opts.Domains[1])
+		}
+
+		if len(opts.Intents) != 2 {
+			t.Fatalf("Intents len = %d, want 2", len(opts.Intents))
+		}
+		if opts.Intents[0].ID != "note" {
+			t.Errorf("Intents[0].ID = %q, want note", opts.Intents[0].ID)
+		}
+		if opts.Intents[1].ID != "draft" {
+			t.Errorf("Intents[1].ID = %q, want draft", opts.Intents[1].ID)
+		}
+
+		if !slices.Equal(opts.Tags, []string{"foo", "bar"}) {
+			t.Errorf("Tags = %v, want [foo bar]", opts.Tags)
+		}
+	})
+
+	t.Run("nil_tags", func(t *testing.T) {
+		oc := &config.OntologyConfig{
+			Domains: []config.OntologyDomain{{ID: "alpha", Folder: "Alpha"}},
+			Intents: []config.OntologyIntent{{ID: "note"}},
+			Tags:    nil,
+		}
+		opts := toConfigureOptions(oc)
+		if opts.Tags != nil {
+			t.Errorf("Tags should be nil (open vocabulary), got %#v", opts.Tags)
+		}
+	})
+
+	t.Run("non_nil_empty_tags", func(t *testing.T) {
+		oc := &config.OntologyConfig{
+			Domains: []config.OntologyDomain{{ID: "alpha", Folder: "Alpha"}},
+			Intents: []config.OntologyIntent{{ID: "note"}},
+			Tags:    []string{},
+		}
+		opts := toConfigureOptions(oc)
+		if opts.Tags == nil {
+			t.Fatal("Tags should be non-nil empty slice (closed-but-empty), got nil")
+		}
+		if len(opts.Tags) != 0 {
+			t.Errorf("Tags len = %d, want 0", len(opts.Tags))
+		}
+	})
+}
+
+func TestPersistentPreRun_ConfigureCalled_WhenOntologySectionPresent(t *testing.T) {
+	t.Cleanup(ontology.ResetForTest)
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, ".siyuan-sync.yaml")
+	body := `endpoint: "https://example.com"
+token: "abc"
+repo_path: "` + dir + `"
+ontology:
+  domains:
+    - id: personal
+      folder: Personal
+  intents:
+    - id: note
+  tags:
+    - foo
+    - bar
+`
+	if err := os.WriteFile(configPath, []byte(body), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cmd := newRootCommand()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"schema", "--json", "--config", configPath})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v\noutput:\n%s", err, buf.String())
+	}
+
+	// Domain enum reflects operator's override.
+	domains := ontology.AllDomains()
+	foundPersonal := false
+	for _, d := range domains {
+		if string(d) == "personal" {
+			foundPersonal = true
+			break
+		}
+	}
+	if !foundPersonal {
+		t.Errorf("expected Domain(\"personal\") in AllDomains(), got %v", domains)
+	}
+
+	// Canonical folder for new domain matches config.
+	router := ontology.Router{}
+	if got := router.CanonicalFolder(ontology.Domain("personal")); got != "Personal" {
+		t.Errorf("CanonicalFolder(personal) = %q, want %q", got, "Personal")
+	}
+
+	// Intent enum reflects operator's override.
+	intents := ontology.AllIntents()
+	foundNote := false
+	for _, i := range intents {
+		if string(i) == "note" {
+			foundNote = true
+			break
+		}
+	}
+	if !foundNote {
+		t.Errorf("expected Intent(\"note\") in AllIntents(), got %v", intents)
+	}
+
+	// Allowed tags reflect operator's override.
+	allowed := ontology.AllowedTags()
+	if !slices.Equal(allowed, []string{"foo", "bar"}) {
+		t.Errorf("AllowedTags() = %v, want [foo bar]", allowed)
+	}
+}
+
+func TestPersistentPreRun_ExitsNonZeroOnInvalidOntologyConfig(t *testing.T) {
+	t.Cleanup(ontology.ResetForTest)
+
+	defaultsBefore := ontology.AllDomains()
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, ".siyuan-sync.yaml")
+	// Duplicate domain id triggers Configure validation error per Task 2.1.
+	body := `endpoint: "https://example.com"
+token: "abc"
+repo_path: "` + dir + `"
+ontology:
+  domains:
+    - id: personal
+      folder: PersonalA
+    - id: personal
+      folder: PersonalB
+  intents:
+    - id: note
+`
+	if err := os.WriteFile(configPath, []byte(body), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cmd := newRootCommand()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"schema", "--json", "--config", configPath})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error from invalid ontology config, got nil")
+	}
+	if !strings.Contains(err.Error(), "duplicate") {
+		t.Errorf("expected error containing 'duplicate', got: %v", err)
+	}
+
+	// Package state unchanged on validation failure.
+	defaultsAfter := ontology.AllDomains()
+	if !slices.Equal(defaultsBefore, defaultsAfter) {
+		t.Errorf("AllDomains() mutated on invalid Configure: before=%v after=%v",
+			defaultsBefore, defaultsAfter)
+	}
+}
+
+func TestPersistentPreRun_NoConfigureCall_WhenOntologySectionAbsent(t *testing.T) {
+	t.Cleanup(ontology.ResetForTest)
+
+	defaultsBefore := ontology.AllDomains()
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, ".siyuan-sync.yaml")
+	body := `endpoint: "https://example.com"
+token: "abc"
+repo_path: "` + dir + `"
+`
+	if err := os.WriteFile(configPath, []byte(body), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cmd := newRootCommand()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"schema", "--json", "--config", configPath})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v\noutput:\n%s", err, buf.String())
+	}
+
+	defaultsAfter := ontology.AllDomains()
+	if !slices.Equal(defaultsBefore, defaultsAfter) {
+		t.Errorf("AllDomains() should equal compile-time defaults when ontology section absent; before=%v after=%v",
+			defaultsBefore, defaultsAfter)
+	}
+	if len(defaultsAfter) != 6 {
+		t.Errorf("AllDomains() len = %d, want 6 (compile-time default count)", len(defaultsAfter))
+	}
+	if len(defaultsAfter) > 0 && string(defaultsAfter[0]) != "devops" {
+		t.Errorf("AllDomains()[0] = %q, want %q (devops first per canonical default ordering)",
+			string(defaultsAfter[0]), "devops")
+	}
+}
+
+func TestPersistentPreRun_NoErrorOnMissingConfigFile(t *testing.T) {
+	t.Cleanup(ontology.ResetForTest)
+
+	defaultsBefore := ontology.AllDomains()
+
+	missingPath := filepath.Join(t.TempDir(), "does-not-exist.yaml")
+
+	cmd := newRootCommand()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"schema", "--json", "--config", missingPath})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v\noutput:\n%s", err, buf.String())
+	}
+
+	defaultsAfter := ontology.AllDomains()
+	if !slices.Equal(defaultsBefore, defaultsAfter) {
+		t.Errorf("AllDomains() should equal compile-time defaults when config file missing; before=%v after=%v",
+			defaultsBefore, defaultsAfter)
 	}
 }
