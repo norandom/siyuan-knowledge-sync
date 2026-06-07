@@ -371,6 +371,182 @@ func TestConfigure_IsIdempotentAndResettable(t *testing.T) {
 	}
 }
 
+// --- Tag vocabulary: open by default ----------------------------------------
+
+func TestAllowedTags_OpenWhenNoConfigure(t *testing.T) {
+	resetToDefaultsForTest()
+	t.Cleanup(resetToDefaultsForTest)
+
+	if got := AllowedTags(); got != nil {
+		t.Fatalf("AllowedTags() before Configure = %v, want nil (open vocabulary)", got)
+	}
+}
+
+func TestIsKnownTag_OpenAcceptsAnything(t *testing.T) {
+	resetToDefaultsForTest()
+	t.Cleanup(resetToDefaultsForTest)
+
+	// Open vocabulary: every tag is accepted before Configure.
+	if !IsKnownTag("anything") {
+		t.Fatal(`IsKnownTag("anything") before Configure = false, want true (open vocabulary)`)
+	}
+
+	// Configure without Tags should also leave vocabulary open.
+	opts := ConfigureOptions{
+		Domains: []ConfigureDomain{{ID: "devops", Folder: "Linux & DevOps"}},
+		Intents: []ConfigureIntent{{ID: "config"}},
+		Tags:    nil,
+	}
+	if err := Configure(opts); err != nil {
+		t.Fatalf("Configure: unexpected error: %v", err)
+	}
+	if !IsKnownTag("whatever") {
+		t.Fatal(`IsKnownTag("whatever") after Configure(Tags=nil) = false, want true`)
+	}
+}
+
+func TestConfigure_TagsNilLeavesVocabOpen(t *testing.T) {
+	resetToDefaultsForTest()
+	t.Cleanup(resetToDefaultsForTest)
+
+	opts := ConfigureOptions{
+		Domains: []ConfigureDomain{{ID: "devops", Folder: "Linux & DevOps"}},
+		Intents: []ConfigureIntent{{ID: "config"}},
+		Tags:    nil,
+	}
+	if err := Configure(opts); err != nil {
+		t.Fatalf("Configure: unexpected error: %v", err)
+	}
+	if got := AllowedTags(); got != nil {
+		t.Fatalf("AllowedTags() after Configure(Tags=nil) = %v, want nil", got)
+	}
+}
+
+func TestConfigure_TagsNonNilEmpty_ClosesVocabAcceptsNothing(t *testing.T) {
+	resetToDefaultsForTest()
+	t.Cleanup(resetToDefaultsForTest)
+
+	opts := ConfigureOptions{
+		Domains: []ConfigureDomain{{ID: "devops", Folder: "Linux & DevOps"}},
+		Intents: []ConfigureIntent{{ID: "config"}},
+		Tags:    []string{},
+	}
+	if err := Configure(opts); err != nil {
+		t.Fatalf("Configure: unexpected error: %v", err)
+	}
+	got := AllowedTags()
+	if got == nil {
+		t.Fatal("AllowedTags() after Configure(Tags=[]) = nil, want non-nil empty slice (closed-but-empty)")
+	}
+	if len(got) != 0 {
+		t.Fatalf("AllowedTags() after Configure(Tags=[]) = %v, want empty slice", got)
+	}
+	if IsKnownTag("anything") {
+		t.Fatal(`IsKnownTag("anything") after Configure(Tags=[]) = true, want false (closed-but-empty)`)
+	}
+}
+
+func TestConfigure_TagsPopulated_AcceptsOnlyConfigured(t *testing.T) {
+	resetToDefaultsForTest()
+	t.Cleanup(resetToDefaultsForTest)
+
+	opts := ConfigureOptions{
+		Domains: []ConfigureDomain{{ID: "devops", Folder: "Linux & DevOps"}},
+		Intents: []ConfigureIntent{{ID: "config"}},
+		Tags:    []string{"claude", "mcp"},
+	}
+	if err := Configure(opts); err != nil {
+		t.Fatalf("Configure: unexpected error: %v", err)
+	}
+
+	got := AllowedTags()
+	want := []string{"claude", "mcp"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("AllowedTags() = %v, want %v", got, want)
+	}
+	if !IsKnownTag("claude") {
+		t.Fatal(`IsKnownTag("claude") = false, want true`)
+	}
+	if !IsKnownTag("mcp") {
+		t.Fatal(`IsKnownTag("mcp") = false, want true`)
+	}
+	if IsKnownTag("rust") {
+		t.Fatal(`IsKnownTag("rust") = true, want false`)
+	}
+}
+
+func TestConfigure_RejectsDuplicateTag(t *testing.T) {
+	resetToDefaultsForTest()
+	t.Cleanup(resetToDefaultsForTest)
+
+	// Vocabulary starts nil (open). On rejection it must stay nil.
+	if got := AllowedTags(); got != nil {
+		t.Fatalf("precondition: AllowedTags() = %v, want nil", got)
+	}
+	opts := ConfigureOptions{
+		Domains: []ConfigureDomain{{ID: "devops", Folder: "Linux & DevOps"}},
+		Intents: []ConfigureIntent{{ID: "config"}},
+		Tags:    []string{"claude", "mcp", "claude"},
+	}
+	err := Configure(opts)
+	if err == nil {
+		t.Fatal("expected non-nil error for duplicate tag, got nil")
+	}
+	if !strings.Contains(err.Error(), "tag") || !strings.Contains(err.Error(), "claude") {
+		t.Fatalf("error %q does not mention duplicate tag", err.Error())
+	}
+	if got := AllowedTags(); got != nil {
+		t.Fatalf("AllowedTags() mutated on error path: got %v, want nil", got)
+	}
+}
+
+func TestConfigure_TagsConfigured_ResetReopensVocab(t *testing.T) {
+	resetToDefaultsForTest()
+	t.Cleanup(resetToDefaultsForTest)
+
+	opts := ConfigureOptions{
+		Domains: []ConfigureDomain{{ID: "devops", Folder: "Linux & DevOps"}},
+		Intents: []ConfigureIntent{{ID: "config"}},
+		Tags:    []string{"claude", "mcp"},
+	}
+	if err := Configure(opts); err != nil {
+		t.Fatalf("Configure: unexpected error: %v", err)
+	}
+	if got := AllowedTags(); got == nil {
+		t.Fatal("AllowedTags() = nil after Configure with non-nil Tags, want non-nil")
+	}
+
+	resetToDefaultsForTest()
+	if got := AllowedTags(); got != nil {
+		t.Fatalf("AllowedTags() after reset = %v, want nil (open vocabulary)", got)
+	}
+}
+
+func TestAllowedTags_ReturnsFreshCopy(t *testing.T) {
+	resetToDefaultsForTest()
+	t.Cleanup(resetToDefaultsForTest)
+
+	opts := ConfigureOptions{
+		Domains: []ConfigureDomain{{ID: "devops", Folder: "Linux & DevOps"}},
+		Intents: []ConfigureIntent{{ID: "config"}},
+		Tags:    []string{"a", "b"},
+	}
+	if err := Configure(opts); err != nil {
+		t.Fatalf("Configure: unexpected error: %v", err)
+	}
+
+	first := AllowedTags()
+	if !reflect.DeepEqual(first, []string{"a", "b"}) {
+		t.Fatalf("first AllowedTags() = %v, want [a b]", first)
+	}
+	first[0] = "x"
+
+	second := AllowedTags()
+	if !reflect.DeepEqual(second, []string{"a", "b"}) {
+		t.Fatalf("second AllowedTags() = %v, want [a b] (caller mutation must not affect state)", second)
+	}
+}
+
 // --- Aggregated validation errors --------------------------------------------
 
 func TestConfigure_AggregatesValidationErrors(t *testing.T) {

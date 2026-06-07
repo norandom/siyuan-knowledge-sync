@@ -22,12 +22,22 @@ type ConfigureIntent struct {
 
 // ConfigureOptions is the validated input to Configure. Domains and Intents
 // are required (a zero-domain or zero-intent ontology is rejected by
-// construction — Requirement 1.3); both must be non-empty. The Tags axis
-// (controlled tag vocabulary) is wired in by a later task and is omitted
-// from this shape on purpose.
+// construction — Requirement 1.3); both must be non-empty.
+//
+// Tags is the optional controlled tag vocabulary (Requirement 4):
+//
+//   - Tags == nil → open vocabulary: every tag is accepted.
+//   - Tags == []string{} (non-nil, length 0) → closed-but-empty
+//     vocabulary: every tag is rejected.
+//   - Tags == []string{...} → closed vocabulary: only listed entries
+//     are accepted.
+//
+// The nil-vs-empty distinction is observable through AllowedTags and
+// IsKnownTag.
 type ConfigureOptions struct {
 	Domains []ConfigureDomain
 	Intents []ConfigureIntent
+	Tags    []string
 }
 
 // idCharset is the closed-enum-id charset shared by Domain and Intent
@@ -52,10 +62,12 @@ var idCharset = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 //   - Domain ids and folder names must be pairwise unique.
 //   - Every intent id must match `^[a-z][a-z0-9-]*$`.
 //   - Intent ids must be pairwise unique.
+//   - opts.Tags entries (when non-nil) must be pairwise unique.
 //
-// On nil return, AllDomains / AllIntents / Router.CanonicalFolder reflect
-// opts in input order. On non-nil return, the previously-active state
-// (compiled-in defaults if Configure had not run before) is preserved.
+// On nil return, AllDomains / AllIntents / Router.CanonicalFolder /
+// AllowedTags / IsKnownTag reflect opts. On non-nil return, the
+// previously-active state (compiled-in defaults if Configure had not run
+// before) is preserved on every axis, including the tag vocabulary.
 func Configure(opts ConfigureOptions) error {
 	var errs []error
 
@@ -126,6 +138,21 @@ func Configure(opts ConfigureOptions) error {
 		}
 	}
 
+	// Per-tag uniqueness (Requirement 4.4). Skipped when opts.Tags is nil
+	// (open vocabulary); applied to every non-nil slice including the
+	// explicit-empty closed-but-empty case (vacuously passes).
+	seenTags := make(map[string]int, len(opts.Tags))
+	for i, t := range opts.Tags {
+		if prev, ok := seenTags[t]; ok {
+			errs = append(errs, fmt.Errorf(
+				"ontology: duplicate tag %q at entries [%d] and [%d]",
+				t, prev, i,
+			))
+		} else {
+			seenTags[t] = i
+		}
+	}
+
 	if len(errs) > 0 {
 		return errors.Join(errs...)
 	}
@@ -144,10 +171,63 @@ func Configure(opts ConfigureOptions) error {
 		newIntents[i] = Intent(in.ID)
 	}
 
+	// Tag-vocabulary snapshot: discriminate nil (open) from non-nil
+	// (closed). A non-nil empty slice closes the vocabulary to zero
+	// accepted tags. We snapshot into a fresh slice so caller mutation
+	// of opts.Tags after Configure returns cannot reach package state.
+	var newTags *[]string
+	if opts.Tags != nil {
+		snapshot := make([]string, len(opts.Tags))
+		copy(snapshot, opts.Tags)
+		newTags = &snapshot
+	}
+
 	allDomainsCanonical = newDomains
 	allIntentsCanonical = newIntents
 	canonicalFolders = newFolders
+	tagVocabulary = newTags
 	return nil
+}
+
+// tagVocabulary holds the configured controlled tag vocabulary. A nil
+// pointer means the vocabulary is open (no Configure call set Tags, or
+// Configure was called with Tags == nil). A non-nil pointer to a slice
+// — including a pointer to an empty slice — means the vocabulary is
+// closed: only listed entries are accepted; the empty-slice case rejects
+// every tag.
+var tagVocabulary *[]string
+
+// AllowedTags returns the configured controlled tag vocabulary.
+//
+// Returns nil when the vocabulary is open (no Configure call configured
+// Tags, or Configure was called with Tags == nil). When the vocabulary
+// is configured, AllowedTags returns a fresh copy of the slice — callers
+// may mutate the returned slice without affecting subsequent calls or
+// package state. A non-nil empty slice means the vocabulary is closed
+// and rejects every tag.
+func AllowedTags() []string {
+	if tagVocabulary == nil {
+		return nil
+	}
+	out := make([]string, len(*tagVocabulary))
+	copy(out, *tagVocabulary)
+	return out
+}
+
+// IsKnownTag reports whether tag is acceptable under the configured
+// vocabulary. When the vocabulary is open (AllowedTags returns nil),
+// every tag is accepted. Otherwise, IsKnownTag reports byte-equal
+// membership against the configured slice.
+func IsKnownTag(tag string) bool {
+	if tagVocabulary == nil {
+		return true
+	}
+	for _, t := range *tagVocabulary {
+		if t == tag {
+			return true
+		}
+	}
+	return false
 }
 
 // resetToDefaultsForTest restores the seeded compile-time defaults across
@@ -158,4 +238,5 @@ func resetToDefaultsForTest() {
 	allDomainsCanonical = append([]Domain(nil), defaultDomains...)
 	allIntentsCanonical = append([]Intent(nil), defaultIntents...)
 	canonicalFolders = copyFolderMap(defaultCanonicalFolders)
+	tagVocabulary = nil
 }

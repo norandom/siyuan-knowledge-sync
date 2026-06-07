@@ -29,7 +29,7 @@
   - _Boundary: internal/ontology_
   - _Depends: 1.1, 1.2_
 
-- [ ] 2.2 Add the tag-vocabulary state and accessors with nil-vs-empty discrimination
+- [x] 2.2 Add the tag-vocabulary state and accessors with nil-vs-empty discrimination
   - Extend `internal/ontology` package state with a private `*[]string` (or equivalent pointer-discriminated storage) for the configured tag vocabulary so `nil` cleanly encodes "open vocabulary" and a non-nil empty slice encodes "closed empty vocabulary"
   - Wire the `Tags` field of `ConfigureOptions` through `Configure(opts)` to that state: nil ⇒ leave open, non-nil ⇒ snapshot to package state, with a duplicate-tag-rejection validation rule
   - Export `AllowedTags() []string` returning a fresh copy (or nil) and `IsKnownTag(tag string) bool` returning true for every value when the vocabulary is open
