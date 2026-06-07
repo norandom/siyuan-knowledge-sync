@@ -44,9 +44,13 @@ const (
 	IntentConcept  Intent = "concept"
 )
 
-// allDomainsCanonical is the immutable in-package canonical ordering.
-// Callers receive copies via AllDomains so they cannot mutate it.
-var allDomainsCanonical = []Domain{
+// defaultDomains is the compile-time seed for the package-level domain
+// state. It carries the canonical six-domain enum in declared order and
+// is the source of truth for the "no configuration section" default
+// behavior (Requirement 6.1). A later Configure(opts) entry point may
+// replace allDomainsCanonical with operator-supplied values, but the
+// values here remain the fallback used at package init.
+var defaultDomains = []Domain{
 	DevOps,
 	Forensics,
 	Security,
@@ -55,13 +59,28 @@ var allDomainsCanonical = []Domain{
 	QuantFinance,
 }
 
-var allIntentsCanonical = []Intent{
+// defaultIntents is the compile-time seed for the package-level intent
+// state. It carries the canonical five-intent enum in declared order
+// and mirrors defaultDomains' role for the intent axis.
+var defaultIntents = []Intent{
 	IntentConfig,
 	IntentSOP,
 	IntentLog,
 	IntentDecision,
 	IntentConcept,
 }
+
+// allDomainsCanonical is the package-private canonical ordering used by
+// every accessor. It is seeded at package init from defaultDomains and
+// is mutable: a future Configure(opts) call (added in a later task)
+// replaces this slice in place so AllDomains() reflects the configured
+// ontology. Callers always receive copies via AllDomains.
+var allDomainsCanonical = append([]Domain(nil), defaultDomains...)
+
+// allIntentsCanonical mirrors allDomainsCanonical for the intent axis:
+// seeded at package init from defaultIntents and mutable through a
+// future Configure(opts) entry point.
+var allIntentsCanonical = append([]Intent(nil), defaultIntents...)
 
 // AllDomains returns a fresh copy of the closed Domain enum in canonical
 // order. Callers may mutate the returned slice without affecting subsequent
