@@ -4038,3 +4038,50 @@ func TestHasSchemaCategoryIssue_MixedWarningAndError(t *testing.T) {
 		t.Errorf("expected hasSchemaCategoryIssue to return true when a schema-category error is present alongside warnings, got false")
 	}
 }
+
+func TestStripLeadingOriginallyWritten(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "no line — body unchanged",
+			in:   "# Title\n\nbody\n",
+			want: "# Title\n\nbody\n",
+		},
+		{
+			name: "single underscore italic line stripped",
+			in:   "_Originally written: 2024-01-23_\n\n# Title\n\nbody\n",
+			want: "# Title\n\nbody\n",
+		},
+		{
+			name: "single asterisk italic line stripped",
+			in:   "*Originally written: 2024-01-23*\n\n# Title\n\nbody\n",
+			want: "# Title\n\nbody\n",
+		},
+		{
+			name: "two stacked lines both stripped",
+			in:   "_Originally written: 2024-02-25_\n\n*Originally written: 2024-01-23*\n\n# Title\n\nbody\n",
+			want: "# Title\n\nbody\n",
+		},
+		{
+			name: "leading whitespace before the line tolerated",
+			in:   "\n\n_Originally written: 2024-01-23_\n\n# Title\n\nbody\n",
+			want: "# Title\n\nbody\n",
+		},
+		{
+			name: "Originally written elsewhere in body untouched",
+			in:   "# Title\n\nsome prose _Originally written: 2024-01-23_ inline\n",
+			want: "# Title\n\nsome prose _Originally written: 2024-01-23_ inline\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := stripLeadingOriginallyWritten(tc.in)
+			if got != tc.want {
+				t.Errorf("stripLeadingOriginallyWritten output mismatch:\nwant: %q\n got: %q", tc.want, got)
+			}
+		})
+	}
+}

@@ -264,6 +264,12 @@ func (e *SyncEngine) processFile(ctx context.Context, report *types.SyncReport, 
 	// the time component — only the date is useful for "when was this
 	// written" context. Prepended as a small italic line above the body's
 	// opening h1 so it's immediately visible without scrolling.
+	//
+	// Idempotency: strip any leading `_Originally written:` lines that may
+	// already be in the source (migration agents historically added them)
+	// or were prepended by a prior sync run, then prepend exactly one. This
+	// is the only line the engine owns; the body never gets a second copy.
+	uploadBody = stripLeadingOriginallyWritten(uploadBody)
 	if metaErr == nil && meta.LastUpdated != "" {
 		datePart := meta.LastUpdated
 		if len(datePart) >= 10 {
@@ -712,3 +718,28 @@ func gitMvAndCommit(repoPath, oldPath, newPath string) error {
 	return nil
 }
 
+// stripLeadingOriginallyWritten removes every leading `_Originally written: …_`
+// line from body so that the engine's own prepend is the sole source of that
+// line in the rendered SiYuan doc. Without this, every sync prepends another
+// copy (and migration agents historically wrote a line themselves with a
+// different inferred date), producing 2+ stacked lines in the output.
+//
+// Recognises both italic forms: `_text_` and `*text*`. Trims leading blank
+// lines around the stripped block.
+func stripLeadingOriginallyWritten(body string) string {
+	for {
+		trimmed := strings.TrimLeft(body, " \t\n")
+		if !(strings.HasPrefix(trimmed, "_Originally written:") ||
+			strings.HasPrefix(trimmed, "*Originally written:")) {
+			if trimmed == body {
+				return body
+			}
+			return trimmed
+		}
+		nl := strings.IndexByte(trimmed, '\n')
+		if nl < 0 {
+			return ""
+		}
+		body = trimmed[nl+1:]
+	}
+}
