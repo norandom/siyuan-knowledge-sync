@@ -56,7 +56,7 @@
   - _Boundary: internal/compliance_
   - _Depends: 2.2_
 
-- [ ] 3.3 (P) Extend `schema --json` with an optional `tags.values` field
+- [x] 3.3 (P) Extend `schema --json` with an optional `tags.values` field
   - Extend `cmd/siyuan-knowledge-sync/schema.go`'s `schemaDoc` with `Tags *schemaTagsDoc \`json:"tags,omitempty"\`` and add a `schemaTagsDoc` type with a `Values []string \`json:"values"\`` field
   - In `buildSchemaDoc()`, populate `Tags` from `ontology.AllowedTags()` only when the result is non-nil; leave the existing top-level fields unchanged
   - Cover with `cmd/siyuan-knowledge-sync/schema_test.go`: the `tags` field is absent from the JSON when vocabulary is unconfigured, the `tags.values` array matches the configured vocabulary when set, and `domain.values` / `domain.folders` / `intent.values` reflect the result of a preceding `Configure(opts)` call

@@ -18,11 +18,18 @@ const schemaVersion = 1
 // schemaDoc is the canonical JSON document emitted by `schema --json`. It
 // is the single source of truth the siyuan-ontology AI Skill reads on every
 // session — the SKILL.md does NOT hardcode the enums.
+//
+// Tags is a pointer with omitempty so the top-level JSON shape stays
+// byte-identical for users without a configured tag vocabulary
+// (Requirement 5.3): nil pointer → key absent. A non-nil pointer means the
+// vocabulary is closed; an empty Values slice inside means closed-but-empty
+// (every tag is unrecognized).
 type schemaDoc struct {
 	Version      int             `json:"version"`
 	Domain       schemaDomainDoc `json:"domain"`
 	Intent       schemaIntentDoc `json:"intent"`
 	RequiredKeys []string        `json:"required_keys"`
+	Tags         *schemaTagsDoc  `json:"tags,omitempty"`
 }
 
 type schemaDomainDoc struct {
@@ -31,6 +38,15 @@ type schemaDomainDoc struct {
 }
 
 type schemaIntentDoc struct {
+	Values []string `json:"values"`
+}
+
+// schemaTagsDoc surfaces the configured controlled tag vocabulary
+// (Requirement 5.2). Values is a non-nil slice when the surrounding pointer
+// is non-nil so JSON renders `"values": []` rather than `null` for the
+// closed-but-empty case — preserving the nil-vs-non-nil-empty distinction
+// observable in `ontology.AllowedTags()`.
+type schemaTagsDoc struct {
 	Values []string `json:"values"`
 }
 
@@ -74,6 +90,23 @@ func buildSchemaDoc() schemaDoc {
 		intentValues = append(intentValues, string(i))
 	}
 
+	// Optional tag vocabulary: ontology.AllowedTags() returns nil for the
+	// open vocabulary (no `tags:` section configured) and a non-nil slice
+	// when the operator pinned a controlled vocabulary. We preserve that
+	// distinction in the JSON output by leaving schemaDoc.Tags as nil in
+	// the open case (omitempty drops the key) and pointing it at a
+	// non-nil Values slice — possibly empty — otherwise.
+	allowed := ontology.AllowedTags()
+	var tags *schemaTagsDoc
+	if allowed != nil {
+		// make() with len(allowed)==0 yields a non-nil empty slice so
+		// JSON renders `"values": []` not `null` for the
+		// closed-but-empty case.
+		values := make([]string, len(allowed))
+		copy(values, allowed)
+		tags = &schemaTagsDoc{Values: values}
+	}
+
 	return schemaDoc{
 		Version: schemaVersion,
 		Domain: schemaDomainDoc{
@@ -84,6 +117,7 @@ func buildSchemaDoc() schemaDoc {
 			Values: intentValues,
 		},
 		RequiredKeys: []string{"domain", "intent"},
+		Tags:         tags,
 	}
 }
 
@@ -119,6 +153,21 @@ func printSchema(out io.Writer, jsonOut bool) error {
 	fmt.Fprintln(out, "\nintent (closed enum):")
 	for _, v := range doc.Intent.Values {
 		fmt.Fprintf(out, "  - %s\n", v)
+	}
+
+	// Tag vocabulary section: only emitted when the operator pinned a
+	// vocabulary (doc.Tags != nil). The unconfigured/open-vocabulary case
+	// stays silent so the human output remains visually identical to the
+	// pre-tags-vocab era for default users.
+	if doc.Tags != nil {
+		fmt.Fprintln(out, "\ntag vocabulary (closed):")
+		if len(doc.Tags.Values) == 0 {
+			fmt.Fprintln(out, "  (configured but empty — every tag is unrecognized)")
+		} else {
+			for _, v := range doc.Tags.Values {
+				fmt.Fprintf(out, "  - %s\n", v)
+			}
+		}
 	}
 
 	return nil
