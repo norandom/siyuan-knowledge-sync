@@ -12,9 +12,9 @@ func TestBuildIndexBody_WithMatches(t *testing.T) {
 		{"id": "20260606172024-1pdg1pv", "content": "Docker explained and illustrated"},
 		{"id": "20260606200746-other00", "content": "Container security basics"},
 	}
-	body := buildIndexBody("concept", "Linux & DevOps", rows)
+	body := buildIndexBody("concept", "Sysadmin & DevOps", rows)
 	wantSubstrings := []string{
-		"# Concept index - Linux & DevOps",
+		"# Concept index - Sysadmin & DevOps",
 		`* ((20260606172024-1pdg1pv "Docker explained and illustrated"))`,
 		`* ((20260606200746-other00 "Container security basics"))`,
 	}
@@ -26,8 +26,8 @@ func TestBuildIndexBody_WithMatches(t *testing.T) {
 }
 
 func TestBuildIndexBody_NoMatches(t *testing.T) {
-	body := buildIndexBody("sop", "Linux & DevOps", nil)
-	want := "_No sop documents in Linux & DevOps yet._"
+	body := buildIndexBody("sop", "Sysadmin & DevOps", nil)
+	want := "_No sop documents in Sysadmin & DevOps yet._"
 	if !strings.Contains(body, want) {
 		t.Errorf("body missing placeholder %q\n--- got ---\n%s", want, body)
 	}
@@ -42,7 +42,7 @@ func TestBuildIndexBody_StripsMdSuffixFromTitle(t *testing.T) {
 		{"id": "id2", "content": "Bare title without extension"},
 		{"id": "id3", "content": "weird.md.md"}, // only the trailing one stripped
 	}
-	body := buildIndexBody("concept", "Linux & DevOps", rows)
+	body := buildIndexBody("concept", "Sysadmin & DevOps", rows)
 	if !strings.Contains(body, `* ((id1 "Docker explained and illustrated"))`) {
 		t.Errorf(".md suffix not stripped from id1; body:\n%s", body)
 	}
@@ -58,7 +58,7 @@ func TestBuildIndexBody_EscapesDoubleQuotesInTitle(t *testing.T) {
 	rows := []map[string]any{
 		{"id": "id1", "content": `What is a "concept"?`},
 	}
-	body := buildIndexBody("concept", "Linux & DevOps", rows)
+	body := buildIndexBody("concept", "Sysadmin & DevOps", rows)
 	// Double quotes inside the title would break the ((id "title")) pill
 	// syntax; they get substituted with single quotes.
 	if strings.Contains(body, `"concept"`) {
@@ -100,7 +100,7 @@ func TestTitleCaseASCII(t *testing.T) {
 
 func TestIsOntologyDomainNotebook(t *testing.T) {
 	cases := map[string]bool{
-		"Linux & DevOps":        true,
+		"Sysadmin & DevOps":        true,
 		"Digital Forensics":     true,
 		"Security":              true,
 		"AI & ML":               true,

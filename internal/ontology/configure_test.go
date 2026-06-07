@@ -37,8 +37,8 @@ func TestConfigure_DefaultsPreservedWhenNoCall(t *testing.T) {
 		t.Fatalf("AllIntents() = %v, want %v", gotIntents, wantIntents)
 	}
 
-	if got := (Router{}).CanonicalFolder(DevOps); got != "Linux & DevOps" {
-		t.Fatalf("CanonicalFolder(DevOps) = %q, want %q", got, "Linux & DevOps")
+	if got := (Router{}).CanonicalFolder(DevOps); got != "Sysadmin & DevOps" {
+		t.Fatalf("CanonicalFolder(DevOps) = %q, want %q", got, "Sysadmin & DevOps")
 	}
 }
 
@@ -51,7 +51,7 @@ func TestConfigure_RejectsDuplicateDomainID(t *testing.T) {
 	before := AllDomains()
 	opts := ConfigureOptions{
 		Domains: []ConfigureDomain{
-			{ID: "devops", Folder: "Linux & DevOps"},
+			{ID: "devops", Folder: "Sysadmin & DevOps"},
 			{ID: "devops", Folder: "Other Folder"},
 		},
 		Intents: []ConfigureIntent{{ID: "config"}},
@@ -161,7 +161,7 @@ func TestConfigure_RejectsInvalidIntentIDCharset(t *testing.T) {
 			beforeI := AllIntents()
 			opts := ConfigureOptions{
 				Domains: []ConfigureDomain{
-					{ID: "devops", Folder: "Linux & DevOps"},
+					{ID: "devops", Folder: "Sysadmin & DevOps"},
 				},
 				Intents: []ConfigureIntent{{ID: id}},
 			}
@@ -184,7 +184,7 @@ func TestConfigure_RejectsDuplicateIntentID(t *testing.T) {
 	before := AllIntents()
 	opts := ConfigureOptions{
 		Domains: []ConfigureDomain{
-			{ID: "devops", Folder: "Linux & DevOps"},
+			{ID: "devops", Folder: "Sysadmin & DevOps"},
 		},
 		Intents: []ConfigureIntent{
 			{ID: "config"},
@@ -227,7 +227,7 @@ func TestConfigure_RejectsEmptyIntents(t *testing.T) {
 	before := AllIntents()
 	opts := ConfigureOptions{
 		Domains: []ConfigureDomain{
-			{ID: "devops", Folder: "Linux & DevOps"},
+			{ID: "devops", Folder: "Sysadmin & DevOps"},
 		},
 		Intents: nil,
 	}
@@ -249,7 +249,7 @@ func TestConfigure_PreservesDomainInputOrder(t *testing.T) {
 		{ID: "quant-finance", Folder: "Quant Finance"},
 		{ID: "security", Folder: "Security"},
 		{ID: "ai-ml", Folder: "AI & ML"},
-		{ID: "devops", Folder: "Linux & DevOps"},
+		{ID: "devops", Folder: "Sysadmin & DevOps"},
 		{ID: "software-dev", Folder: "Software Development"},
 	}
 	opts := ConfigureOptions{
@@ -295,7 +295,7 @@ func TestConfigure_PreservesIntentInputOrder(t *testing.T) {
 	}
 	opts := ConfigureOptions{
 		Domains: []ConfigureDomain{
-			{ID: "devops", Folder: "Linux & DevOps"},
+			{ID: "devops", Folder: "Sysadmin & DevOps"},
 		},
 		Intents: in,
 	}
@@ -393,7 +393,7 @@ func TestIsKnownTag_OpenAcceptsAnything(t *testing.T) {
 
 	// Configure without Tags should also leave vocabulary open.
 	opts := ConfigureOptions{
-		Domains: []ConfigureDomain{{ID: "devops", Folder: "Linux & DevOps"}},
+		Domains: []ConfigureDomain{{ID: "devops", Folder: "Sysadmin & DevOps"}},
 		Intents: []ConfigureIntent{{ID: "config"}},
 		Tags:    nil,
 	}
@@ -410,7 +410,7 @@ func TestConfigure_TagsNilLeavesVocabOpen(t *testing.T) {
 	t.Cleanup(resetToDefaultsForTest)
 
 	opts := ConfigureOptions{
-		Domains: []ConfigureDomain{{ID: "devops", Folder: "Linux & DevOps"}},
+		Domains: []ConfigureDomain{{ID: "devops", Folder: "Sysadmin & DevOps"}},
 		Intents: []ConfigureIntent{{ID: "config"}},
 		Tags:    nil,
 	}
@@ -427,7 +427,7 @@ func TestConfigure_TagsNonNilEmpty_ClosesVocabAcceptsNothing(t *testing.T) {
 	t.Cleanup(resetToDefaultsForTest)
 
 	opts := ConfigureOptions{
-		Domains: []ConfigureDomain{{ID: "devops", Folder: "Linux & DevOps"}},
+		Domains: []ConfigureDomain{{ID: "devops", Folder: "Sysadmin & DevOps"}},
 		Intents: []ConfigureIntent{{ID: "config"}},
 		Tags:    []string{},
 	}
@@ -451,7 +451,7 @@ func TestConfigure_TagsPopulated_AcceptsOnlyConfigured(t *testing.T) {
 	t.Cleanup(resetToDefaultsForTest)
 
 	opts := ConfigureOptions{
-		Domains: []ConfigureDomain{{ID: "devops", Folder: "Linux & DevOps"}},
+		Domains: []ConfigureDomain{{ID: "devops", Folder: "Sysadmin & DevOps"}},
 		Intents: []ConfigureIntent{{ID: "config"}},
 		Tags:    []string{"claude", "mcp"},
 	}
@@ -484,7 +484,7 @@ func TestConfigure_RejectsDuplicateTag(t *testing.T) {
 		t.Fatalf("precondition: AllowedTags() = %v, want nil", got)
 	}
 	opts := ConfigureOptions{
-		Domains: []ConfigureDomain{{ID: "devops", Folder: "Linux & DevOps"}},
+		Domains: []ConfigureDomain{{ID: "devops", Folder: "Sysadmin & DevOps"}},
 		Intents: []ConfigureIntent{{ID: "config"}},
 		Tags:    []string{"claude", "mcp", "claude"},
 	}
@@ -505,7 +505,7 @@ func TestConfigure_TagsConfigured_ResetReopensVocab(t *testing.T) {
 	t.Cleanup(resetToDefaultsForTest)
 
 	opts := ConfigureOptions{
-		Domains: []ConfigureDomain{{ID: "devops", Folder: "Linux & DevOps"}},
+		Domains: []ConfigureDomain{{ID: "devops", Folder: "Sysadmin & DevOps"}},
 		Intents: []ConfigureIntent{{ID: "config"}},
 		Tags:    []string{"claude", "mcp"},
 	}
@@ -527,7 +527,7 @@ func TestAllowedTags_ReturnsFreshCopy(t *testing.T) {
 	t.Cleanup(resetToDefaultsForTest)
 
 	opts := ConfigureOptions{
-		Domains: []ConfigureDomain{{ID: "devops", Folder: "Linux & DevOps"}},
+		Domains: []ConfigureDomain{{ID: "devops", Folder: "Sysadmin & DevOps"}},
 		Intents: []ConfigureIntent{{ID: "config"}},
 		Tags:    []string{"a", "b"},
 	}
@@ -559,7 +559,7 @@ func TestConfigure_AggregatesValidationErrors(t *testing.T) {
 	//   3. invalid intent id charset "Bad_Intent"
 	opts := ConfigureOptions{
 		Domains: []ConfigureDomain{
-			{ID: "devops", Folder: "Linux & DevOps"},
+			{ID: "devops", Folder: "Sysadmin & DevOps"},
 			{ID: "devops", Folder: "_reserved"},
 		},
 		Intents: []ConfigureIntent{

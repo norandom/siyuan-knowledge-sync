@@ -19,7 +19,7 @@ func TestCanonicalFolder_AllDomains(t *testing.T) {
 		domain Domain
 		want   string
 	}{
-		{DevOps, "Linux & DevOps"},
+		{DevOps, "Sysadmin & DevOps"},
 		{Forensics, "Digital Forensics"},
 		{Security, "Security"},
 		{AIML, "AI & ML"},
@@ -69,7 +69,7 @@ func TestCanonicalFolder_PanicsOnUnknownDomain(t *testing.T) {
 // canonical folder yields RouteNoop with empty TargetPath. (Requirement 3.6)
 func TestRoute_AlreadyCanonical(t *testing.T) {
 	r := Router{}
-	local := "Linux & DevOps/foo.md"
+	local := "Sysadmin & DevOps/foo.md"
 	got := r.Route(DevOps, local, nil)
 	if got.Action != RouteNoop {
 		t.Fatalf("Action = %v, want RouteNoop", got.Action)
@@ -90,7 +90,7 @@ func TestRoute_AlreadyCanonical(t *testing.T) {
 // (RouteNoop). The router does not flatten existing organization. (Requirement 3.6)
 func TestRoute_AlreadyDeeperUnderCanonical(t *testing.T) {
 	r := Router{}
-	local := "Linux & DevOps/sub/foo.md"
+	local := "Sysadmin & DevOps/sub/foo.md"
 	got := r.Route(DevOps, local, nil)
 	if got.Action != RouteNoop {
 		t.Fatalf("Action = %v, want RouteNoop (already under canonical subtree)", got.Action)
@@ -110,7 +110,7 @@ func TestRoute_OutsideCanonicalMovesToCanonical(t *testing.T) {
 	if got.Action != RouteMove {
 		t.Fatalf("Action = %v, want RouteMove", got.Action)
 	}
-	want := "Linux & DevOps/foo.md"
+	want := "Sysadmin & DevOps/foo.md"
 	if got.TargetPath != want {
 		t.Fatalf("TargetPath = %q, want %q (basename only, not subdirectory)", got.TargetPath, want)
 	}
@@ -139,7 +139,7 @@ func TestRoute_AssetWarning_BasicMove(t *testing.T) {
 		t.Fatalf("Reference = %q, want %q", w.Reference, "assets/foo.png")
 	}
 	wantOld := filepath.ToSlash(filepath.Join("legacy/Hosting", "assets/foo.png"))
-	wantNew := filepath.ToSlash(filepath.Join("Linux & DevOps", "assets/foo.png"))
+	wantNew := filepath.ToSlash(filepath.Join("Sysadmin & DevOps", "assets/foo.png"))
 	if filepath.ToSlash(w.OldResolved) != wantOld {
 		t.Fatalf("OldResolved = %q, want %q", w.OldResolved, wantOld)
 	}
@@ -227,7 +227,7 @@ func TestRoute_AssetWarning_TargetExistsTrue(t *testing.T) {
 	if err := os.MkdirAll(srcDir, 0o755); err != nil {
 		t.Fatalf("mkdir src: %v", err)
 	}
-	dstAssetDir := filepath.Join(tmp, "Linux & DevOps", "assets")
+	dstAssetDir := filepath.Join(tmp, "Sysadmin & DevOps", "assets")
 	if err := os.MkdirAll(dstAssetDir, 0o755); err != nil {
 		t.Fatalf("mkdir dst asset: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestRoute_AssetWarning_TargetExistsTrue(t *testing.T) {
 // paths are unchanged, so nothing could break).
 func TestRoute_Noop_NoAssetWarnings(t *testing.T) {
 	r := Router{}
-	local := "Linux & DevOps/foo.md"
+	local := "Sysadmin & DevOps/foo.md"
 	body := []byte("![](assets/foo.png)\n[link](other/bar.md)\n")
 	got := r.Route(DevOps, local, body)
 	if got.Action != RouteNoop {
@@ -328,7 +328,7 @@ func (d *RouteDecision) sortWarningsByRef() {
 // location, so the router must not emit AssetWarnings for them.
 //
 // Bug surfaced by the real wiki migration of
-// `Linux & DevOps/Docker explained and illustrated.md`: its
+// `Sysadmin & DevOps/Docker explained and illustrated.md`: its
 // auto-generated TOC contained 10 `[Section](#anchor)` links, all of which
 // were incorrectly classified as broken asset refs, polluting stderr with
 // 10 spurious warnings per file.
@@ -354,7 +354,7 @@ func TestRoute_AnchorRefs_NotClassifiedAsAssetWarning_BugFix(t *testing.T) {
 // not against the process working directory.
 //
 // Bug surfaced by the real wiki migration: assets had been pre-migrated to
-// `Linux & DevOps/attachments/*.png` (present on disk), but the
+// `Sysadmin & DevOps/attachments/*.png` (present on disk), but the
 // router's `os.Stat` ran with a cwd of the pocket-know dev tree, not the
 // wiki repo root, so every probe returned false. The Docker note's per-
 // entry error report listed 5 phantom "target_exists=false" warnings on
@@ -362,8 +362,8 @@ func TestRoute_AnchorRefs_NotClassifiedAsAssetWarning_BugFix(t *testing.T) {
 func TestRoute_TargetExistsProbe_UsesRepoPath_WhenSet_BugFix(t *testing.T) {
 	repoRoot := t.TempDir()
 	// Place an asset at the path the route would resolve to AFTER the move.
-	// The file lives under repoRoot at `Linux & DevOps/attachments/p.png`.
-	canonicalAssetDir := filepath.Join(repoRoot, "Linux & DevOps", "attachments")
+	// The file lives under repoRoot at `Sysadmin & DevOps/attachments/p.png`.
+	canonicalAssetDir := filepath.Join(repoRoot, "Sysadmin & DevOps", "attachments")
 	if err := os.MkdirAll(canonicalAssetDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}

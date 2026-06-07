@@ -1058,7 +1058,7 @@ autofix: false
 ontology:
   domains:
     - id: devops
-      folder: "Linux & DevOps"
+      folder: "Sysadmin & DevOps"
     - id: forensics
       folder: "Digital Forensics"
     - id: security

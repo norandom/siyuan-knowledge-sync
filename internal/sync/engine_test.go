@@ -2838,11 +2838,11 @@ func TestSync_SchemaGate_AbortsViolatingFile_BatchContinues(t *testing.T) {
 
 	// b.md is created normally. After task 3.2 (pre-sync ontology routing)
 	// landed, a valid (devops, sop) file at the non-canonical path wiki/b.md
-	// is `git mv`'d to Linux & DevOps/b.md before upload, so Created
+	// is `git mv`'d to Sysadmin & DevOps/b.md before upload, so Created
 	// reports the canonical post-route path. The original 3.1 intent —
 	// "the valid sibling syncs while the violating sibling is aborted" —
 	// is preserved.
-	canonicalB := "Linux & DevOps/b.md"
+	canonicalB := "Sysadmin & DevOps/b.md"
 	if len(report.Created) != 1 || report.Created[0] != canonicalB {
 		t.Fatalf("Req 2.6 batch-continues: expected created=[%q], got %v (errors=%v)",
 			canonicalB, report.Created, report.Errors)
@@ -3035,7 +3035,7 @@ func TestSync_OntologyRouting_MovesAndCommits(t *testing.T) {
 	// Place the file at a non-canonical path under the `wiki` notebook.
 	// Frontmatter declares domain=devops and intent=sop (both valid), so
 	// the gate passes and the router emits RouteMove to
-	// `Linux & DevOps/foo.md`.
+	// `Sysadmin & DevOps/foo.md`.
 	content := "---\ndomain: devops\nintent: sop\n---\n# Foo\n\nBody.\n"
 	writeGitFile(t, dir, "wiki/misc/foo.md", content)
 	gitCmd(t, dir, "add", "wiki/misc/foo.md")
@@ -3052,7 +3052,7 @@ func TestSync_OntologyRouting_MovesAndCommits(t *testing.T) {
 	}
 
 	// The file is reported as Created under its NEW canonical path.
-	canonical := "Linux & DevOps/foo.md"
+	canonical := "Sysadmin & DevOps/foo.md"
 	if len(report.Created) != 1 || report.Created[0] != canonical {
 		t.Fatalf("Req 3.2: expected Created=[%q], got %v (errors=%v)", canonical, report.Created, report.Errors)
 	}
@@ -3105,7 +3105,7 @@ func TestSync_OntologyRouting_NoopWhenAlreadyCanonical(t *testing.T) {
 	dir := setupGitDir(t)
 	defer os.RemoveAll(dir)
 
-	canonical := "Linux & DevOps/foo.md"
+	canonical := "Sysadmin & DevOps/foo.md"
 	content := "---\ndomain: devops\nintent: sop\n---\n# Foo\n"
 	writeGitFile(t, dir, canonical, content)
 	gitCmd(t, dir, "add", canonical)
@@ -3256,7 +3256,7 @@ func TestSync_OntologyRouting_StateCollision(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStateTracker: %v", err)
 	}
-	canonical := "Linux & DevOps/foo.md"
+	canonical := "Sysadmin & DevOps/foo.md"
 	tr.Put(types.SyncEntry{
 		LocalPath:  "wiki/misc/foo.md",
 		SiYuanID:   "src-doc-id",
@@ -3349,7 +3349,7 @@ func TestSync_RouteAndSync_HappyPath(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	// Non-canonical wiki/misc/ path with a (devops, sop) ontology and two
-	// frontmatter tags. The router will route to Linux & DevOps/foo.md.
+	// frontmatter tags. The router will route to Sysadmin & DevOps/foo.md.
 	content := "---\ndomain: devops\nintent: sop\ntags: [a, b]\n---\n# Foo\n\nBody.\n"
 	writeGitFile(t, dir, "wiki/misc/foo.md", content)
 	gitCmd(t, dir, "add", "wiki/misc/foo.md")
@@ -3364,7 +3364,7 @@ func TestSync_RouteAndSync_HappyPath(t *testing.T) {
 		t.Fatalf("RouteAndSync returned error: %v", err)
 	}
 
-	canonical := "Linux & DevOps/foo.md"
+	canonical := "Sysadmin & DevOps/foo.md"
 
 	// Filesystem: file moved to canonical path.
 	if _, err := os.Stat(filepath.Join(dir, canonical)); err != nil {
@@ -3480,7 +3480,7 @@ func TestSync_RouteAndSync_SchemaViolationReturnsError(t *testing.T) {
 	if _, ok := allState["wiki/misc/bad.md"]; ok {
 		t.Errorf("expected NO state entry at source path on schema violation, got %v", allState)
 	}
-	if _, ok := allState["Linux & DevOps/bad.md"]; ok {
+	if _, ok := allState["Sysadmin & DevOps/bad.md"]; ok {
 		t.Errorf("expected NO state entry at target path on schema violation, got %v", allState)
 	}
 }
@@ -3497,7 +3497,7 @@ func TestSync_RouteAndSync_TitleFailure_StillInState(t *testing.T) {
 
 	// Place at canonical path so no routing happens; the focus is the
 	// title-failure path, not routing.
-	canonical := "Linux & DevOps/x.md"
+	canonical := "Sysadmin & DevOps/x.md"
 	content := "---\ndomain: devops\nintent: sop\ntitle: My Title\n---\n# Body\n"
 	writeGitFile(t, dir, canonical, content)
 	gitCmd(t, dir, "add", canonical)
@@ -3638,7 +3638,7 @@ func TestOntologyGate_Sync_AppliesCustomDomainIntentAttrs(t *testing.T) {
 
 	// Place the file at its canonical folder to keep the focus on the
 	// attrs payload (no routing concerns; that is covered by 3.2 tests).
-	canonical := "Linux & DevOps/attrs.md"
+	canonical := "Sysadmin & DevOps/attrs.md"
 	content := "---\ndomain: devops\nintent: sop\ntags: [a, b]\n---\n# Body\n"
 	writeGitFile(t, dir, canonical, content)
 	gitCmd(t, dir, "add", canonical)
@@ -3709,7 +3709,7 @@ func TestOntologyGate_Sync_AppliesCustomDomainIntentAttrs(t *testing.T) {
 //
 //	valid_file_routed_with_state_and_commit
 //	  Mirrors TestSync_OntologyRouting_MovesAndCommits — a (devops, sop)
-//	  file at wiki/misc/foo.md is git-mv'd to Linux & DevOps/foo.md
+//	  file at wiki/misc/foo.md is git-mv'd to Sysadmin & DevOps/foo.md
 //	  with exactly one ontology-route: commit; state tracker reflects the
 //	  new path. (Req 3.2, 3.3.)
 //
@@ -3743,7 +3743,7 @@ func TestOntologyGate_RoutingFlow_FourScenarios(t *testing.T) {
 		}
 
 		// The valid sibling syncs (under its routed canonical path).
-		canonicalB := "Linux & DevOps/b.md"
+		canonicalB := "Sysadmin & DevOps/b.md"
 		if len(report.Created) != 1 || report.Created[0] != canonicalB {
 			t.Fatalf("expected Created=[%q] (batch continues past gate), got %v (errors=%v)",
 				canonicalB, report.Created, report.Errors)
@@ -3802,7 +3802,7 @@ func TestOntologyGate_RoutingFlow_FourScenarios(t *testing.T) {
 			t.Fatalf("Sync failed: %v", err)
 		}
 
-		canonical := "Linux & DevOps/foo.md"
+		canonical := "Sysadmin & DevOps/foo.md"
 		if len(report.Created) != 1 || report.Created[0] != canonical {
 			t.Fatalf("expected Created=[%q], got %v (errors=%v)",
 				canonical, report.Created, report.Errors)
@@ -3852,7 +3852,7 @@ func TestOntologyGate_RoutingFlow_FourScenarios(t *testing.T) {
 		dir := setupGitDir(t)
 		defer os.RemoveAll(dir)
 
-		canonical := "Linux & DevOps/foo.md"
+		canonical := "Sysadmin & DevOps/foo.md"
 		content := "---\ndomain: devops\nintent: sop\n---\n# Foo\n"
 		writeGitFile(t, dir, canonical, content)
 		gitCmd(t, dir, "add", canonical)
@@ -3906,7 +3906,7 @@ func TestOntologyGate_RoutingFlow_FourScenarios(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewStateTracker: %v", err)
 		}
-		canonical := "Linux & DevOps/foo.md"
+		canonical := "Sysadmin & DevOps/foo.md"
 		tr.Put(types.SyncEntry{
 			LocalPath:  "wiki/misc/foo.md",
 			SiYuanID:   "src-doc-id",

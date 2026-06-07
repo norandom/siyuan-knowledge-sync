@@ -179,7 +179,7 @@ repo_path: "/notes"
 ontology:
   domains:
     - id: devops
-      folder: "Linux & DevOps"
+      folder: "Sysadmin & DevOps"
     - id: forensics
       folder: "Digital Forensics"
   intents:
@@ -202,8 +202,8 @@ ontology:
 	if cfg.Ontology.Domains[0].ID != "devops" {
 		t.Errorf("domains[0].ID = %q, want %q", cfg.Ontology.Domains[0].ID, "devops")
 	}
-	if cfg.Ontology.Domains[0].Folder != "Linux & DevOps" {
-		t.Errorf("domains[0].Folder = %q, want %q", cfg.Ontology.Domains[0].Folder, "Linux & DevOps")
+	if cfg.Ontology.Domains[0].Folder != "Sysadmin & DevOps" {
+		t.Errorf("domains[0].Folder = %q, want %q", cfg.Ontology.Domains[0].Folder, "Sysadmin & DevOps")
 	}
 	if cfg.Ontology.Domains[1].ID != "forensics" {
 		t.Errorf("domains[1].ID = %q, want %q", cfg.Ontology.Domains[1].ID, "forensics")
@@ -239,7 +239,7 @@ repo_path: "/notes"
 ontology:
   domains:
     - id: devops
-      folder: "Linux & DevOps"
+      folder: "Sysadmin & DevOps"
   intents:
     - id: config
 `)
@@ -266,7 +266,7 @@ repo_path: "/notes"
 ontology:
   domains:
     - id: devops
-      folder: "Linux & DevOps"
+      folder: "Sysadmin & DevOps"
   intents:
     - id: config
   tags: []

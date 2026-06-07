@@ -86,7 +86,7 @@ type AssetWarning struct {
 // (design.md): test fixtures, e2e hpath assertions, and the SiYuan-side
 // notebook layout all key off these strings.
 var defaultCanonicalFolders = map[Domain]string{
-	DevOps:       "Linux & DevOps",
+	DevOps:       "Sysadmin & DevOps",
 	Forensics:    "Digital Forensics",
 	Security:     "Security",
 	AIML:         "AI & ML",

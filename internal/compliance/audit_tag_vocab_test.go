@@ -16,7 +16,7 @@ func configureWithTags(t *testing.T, tags []string) {
 	t.Helper()
 	opts := ontology.ConfigureOptions{
 		Domains: []ontology.ConfigureDomain{
-			{ID: "devops", Folder: "Linux & DevOps"},
+			{ID: "devops", Folder: "Sysadmin & DevOps"},
 			{ID: "forensics", Folder: "Digital Forensics"},
 			{ID: "security", Folder: "Security"},
 			{ID: "ai-ml", Folder: "AI & ML"},

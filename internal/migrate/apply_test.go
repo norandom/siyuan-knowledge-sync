@@ -649,7 +649,7 @@ func TestApply_KeepFailureIsolatedByGitMvError(t *testing.T) {
 	// Pre-seed the canonical devops target with an unrelated, already-routed
 	// file `bad.md`. A later OpKeep on `wiki/misc/bad.md` will route to the
 	// same target -> `git mv` refuses (destination already exists).
-	writeGitFile(t, repo, "Linux & DevOps/bad.md", "# Pre-existing bad.md\n")
+	writeGitFile(t, repo, "Sysadmin & DevOps/bad.md", "# Pre-existing bad.md\n")
 	writeGitFile(t, repo, "wiki/misc/bad.md", "# Source bad.md\nbody\n")
 	writeGitFile(t, repo, "wiki/misc/good.md", "# Good\nbody\n")
 	gitCmd(t, repo, "add", ".")
@@ -814,7 +814,7 @@ func TestApply_UnsafeRewrite_ProducesStructuredError(t *testing.T) {
 // Setup: two `OpKeep` entries with the SAME canonical target hpath -- same
 // `domain: devops` and same basename `colliding.md`, but different source
 // paths under non-canonical folders. After routing, both want to land at
-// `Linux & DevOps/colliding.md` (hpath `/colliding.md`).
+// `Sysadmin & DevOps/colliding.md` (hpath `/colliding.md`).
 //
 // V1 behavior (task 3.4's documented deferral): there is NO explicit pre-
 // write hpath probe in `migrate.Apply`. The first entry's `git mv` succeeds
@@ -957,7 +957,7 @@ func TestApply_RewrittenBody_PreservesFrontmatter(t *testing.T) {
 	// canonical devops folder.
 	candidates := []string{
 		filepath.Join(repo, "wiki/misc/a.md"),
-		filepath.Join(repo, "Linux & DevOps/a.md"),
+		filepath.Join(repo, "Sysadmin & DevOps/a.md"),
 	}
 	var final string
 	for _, p := range candidates {
