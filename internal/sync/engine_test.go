@@ -3983,3 +3983,58 @@ func TestOntologyGate_RoutingFlow_FourScenarios(t *testing.T) {
 		}
 	})
 }
+
+// TestHasSchemaCategoryIssue_WarningSeverityDoesNotAbort pins the cross-package
+// contract between the compliance tag-vocabulary check (Req 4.2 / 4.3) and the
+// sync engine's schema gate. The tag-vocab check emits issues with
+// Category=="schema" and Severity=="warning"; the gate must NOT abort the
+// file's sync on those entries — only on error-severity schema violations.
+func TestHasSchemaCategoryIssue_WarningSeverityDoesNotAbort(t *testing.T) {
+	issues := []types.ComplianceIssue{
+		{
+			File:     "test.md",
+			Line:     0,
+			Severity: "warning",
+			Message:  `unrecognized tag "foo" — not in configured vocabulary`,
+			Fixable:  false,
+			Category: "schema",
+		},
+	}
+
+	if hasSchemaCategoryIssue(issues) {
+		t.Errorf("expected hasSchemaCategoryIssue to return false for a schema-category warning, got true")
+	}
+}
+
+// TestHasSchemaCategoryIssue_ErrorSeverityAborts pins the other half of the
+// contract: existing error-severity schema violations (missing required key,
+// multi-value, out-of-enum) MUST still trip the gate.
+func TestHasSchemaCategoryIssue_ErrorSeverityAborts(t *testing.T) {
+	issues := []types.ComplianceIssue{
+		{
+			File:     "test.md",
+			Line:     0,
+			Severity: "error",
+			Message:  `ontology schema violation in test.md: key="domain" offending="" allowed=[devops,...]`,
+			Fixable:  false,
+			Category: "schema",
+		},
+	}
+
+	if !hasSchemaCategoryIssue(issues) {
+		t.Errorf("expected hasSchemaCategoryIssue to return true for a schema-category error, got false")
+	}
+}
+
+// TestHasSchemaCategoryIssue_MixedWarningAndError verifies that a warning
+// alongside an error still aborts: the error wins.
+func TestHasSchemaCategoryIssue_MixedWarningAndError(t *testing.T) {
+	issues := []types.ComplianceIssue{
+		{Category: "schema", Severity: "warning", Message: "tag warning"},
+		{Category: "schema", Severity: "error", Message: "missing domain"},
+	}
+
+	if !hasSchemaCategoryIssue(issues) {
+		t.Errorf("expected hasSchemaCategoryIssue to return true when a schema-category error is present alongside warnings, got false")
+	}
+}

@@ -47,7 +47,7 @@
   - _Requirements: 1.1, 1.2_
   - _Boundary: internal/config_
 
-- [ ] 3.2 (P) Add the tag-vocabulary compliance check
+- [x] 3.2 (P) Add the tag-vocabulary compliance check
   - Extend `internal/compliance/audit.go` with a check that runs only when `ontology.AllowedTags() != nil` and emits one `Category: "schema"`, `Severity: "warning"` issue per file × unrecognized tag
   - The check must never abort the audit; the file proceeds through every other compliance rule, and the warning surfaces alongside any other issues
   - Cover with `internal/compliance/audit_tag_vocab_test.go`: emits one warning per unknown tag on a configured-vocabulary file, emits zero issues when the vocabulary is nil, leaves other compliance categories untouched

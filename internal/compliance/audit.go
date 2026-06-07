@@ -3,6 +3,7 @@ package compliance
 import (
 	"bytes"
 	"regexp"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -54,8 +55,74 @@ func (e *ComplianceEngine) Audit(filePath string, content []byte) ([]types.Compl
 	issues = append(issues, e.checkTagCompliance(filePath, content)...)
 	issues = append(issues, e.checkTOCCompliance(filePath, content)...)
 	issues = append(issues, e.checkOntologySchema(filePath, content)...)
+	issues = append(issues, e.checkTagVocabulary(filePath, content)...)
 
 	return issues, nil
+}
+
+// checkTagVocabulary emits a non-aborting warning for every tag in the file
+// that is not a member of the configured controlled vocabulary (Req 4.2).
+//
+// The check is skipped entirely when ontology.AllowedTags() returns nil —
+// the vocabulary is open and every tag is accepted (Req 4.3). When the
+// vocabulary is configured (including the closed-but-empty case), each
+// frontmatter or inline tag is normalized via the existing TagExtractor
+// (same normalization the sync engine applies when forwarding tags as
+// SiYuan block attributes) and looked up via ontology.IsKnownTag.
+//
+// Each unrecognized tag yields one ComplianceIssue with:
+//   - File     = filePath
+//   - Line     = 0 (file-scoped; the tag value identifies the violation)
+//   - Severity = "warning"  — critical: this tells the sync engine's
+//     hasSchemaCategoryIssue gate NOT to abort the file's sync.
+//   - Category = "schema"   — same category as ontology missing-key /
+//     out-of-enum violations so downstream consumers can route the issue.
+//   - Fixable  = false      — autofix must never invent vocabulary entries.
+//   - Message  references both the offending tag value and the fact that
+//     it is not in the configured vocabulary.
+//
+// Emission order is lexicographic on the normalized tag value so test
+// expectations and human-readable reports stay deterministic across runs.
+func (e *ComplianceEngine) checkTagVocabulary(filePath string, content []byte) []types.ComplianceIssue {
+	if ontology.AllowedTags() == nil {
+		return nil
+	}
+
+	// Extract returns a map[string]string of `custom-<tag>` keys covering
+	// frontmatter and inline tags after the same normalization the sync
+	// engine applies. We ignore extraction errors here on purpose:
+	// checkTagCompliance already surfaces extractor failures as a warning,
+	// and a parse failure should not double-emit through the vocab path.
+	attrs, err := e.tagExtractor.Extract(content)
+	if err != nil {
+		return nil
+	}
+
+	// Collect tag suffixes and sort for deterministic emission order.
+	names := make([]string, 0, len(attrs))
+	for k := range attrs {
+		if !strings.HasPrefix(k, "custom-") {
+			continue
+		}
+		names = append(names, strings.TrimPrefix(k, "custom-"))
+	}
+	sort.Strings(names)
+
+	var issues []types.ComplianceIssue
+	for _, name := range names {
+		if ontology.IsKnownTag(name) {
+			continue
+		}
+		issues = append(issues, types.ComplianceIssue{
+			File:     filePath,
+			Line:     0,
+			Severity: "warning",
+			Message:  "unrecognized tag \"" + name + "\" — not in configured vocabulary",
+			Fixable:  false,
+			Category: "schema",
+		})
+	}
+	return issues
 }
 
 // schemaIssue builds a schema-category compliance issue. Schema violations

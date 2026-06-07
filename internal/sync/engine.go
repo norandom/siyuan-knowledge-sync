@@ -576,9 +576,16 @@ func mergeContent(existing, incoming string) string {
 // gate needs to inspect the frontmatter at all. It scans the compliance
 // audit output for any issue whose Category is "schema" — the marker the
 // audit layer uses for ontology violations (Req 1, Req 2).
+//
+// Warning-severity schema issues do NOT trip the gate. The tag-vocabulary
+// check (Req 4.2 / 4.3) emits Category=="schema" with Severity=="warning"
+// for unrecognized tags and must never abort the file's sync; that contract
+// is honored here by skipping warning entries. Existing schema violations
+// (missing required key, multi-value, out-of-enum) are emitted with
+// Severity=="error" and still abort.
 func hasSchemaCategoryIssue(issues []types.ComplianceIssue) bool {
 	for _, i := range issues {
-		if i.Category == "schema" {
+		if i.Category == "schema" && i.Severity != "warning" {
 			return true
 		}
 	}

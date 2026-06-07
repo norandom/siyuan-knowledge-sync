@@ -240,3 +240,17 @@ func resetToDefaultsForTest() {
 	canonicalFolders = copyFolderMap(defaultCanonicalFolders)
 	tagVocabulary = nil
 }
+
+// ResetForTest restores the seeded compile-time ontology defaults across
+// every piece of package state Configure can mutate (domains, intents,
+// canonical folder map, tag vocabulary). It exists solely so tests in
+// downstream packages (e.g. internal/compliance) can isolate one another
+// by calling Configure with a controlled fixture and then resetting to
+// known defaults in t.Cleanup. The package is internal/ so this helper
+// is invisible to external Go consumers, but the *ForTest suffix names
+// the intent explicitly.
+//
+// Test-only — DO NOT call from production code.
+func ResetForTest() {
+	resetToDefaultsForTest()
+}
