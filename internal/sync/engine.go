@@ -262,15 +262,15 @@ func (e *SyncEngine) processFile(ctx context.Context, report *types.SyncReport, 
 	// Make the source-of-truth original timestamp visible in the rendered
 	// post (in addition to the queryable custom-last-updated attr). Strip
 	// the time component — only the date is useful for "when was this
-	// written" context. Appended as a footer after a thematic break so it
-	// doesn't disrupt the doc opening.
+	// written" context. Prepended as a small italic line above the body's
+	// opening h1 so it's immediately visible without scrolling.
 	if metaErr == nil && meta.LastUpdated != "" {
 		datePart := meta.LastUpdated
 		if len(datePart) >= 10 {
 			datePart = datePart[:10] // YYYY-MM-DD
 		}
-		uploadBody = strings.TrimRight(uploadBody, "\n") +
-			"\n\n---\n\n_Originally written: " + datePart + "_\n"
+		uploadBody = "_Originally written: " + datePart + "_\n\n" +
+			strings.TrimLeft(uploadBody, "\n")
 	}
 
 	// Step 2.5: upload each relative asset reference in the body to SiYuan
