@@ -2,8 +2,8 @@
 //
 // It cross-compiles the CLI for the supported release targets inside a
 // reproducible golang container and packages a checksummed dist directory.
-// Supported targets: linux/amd64, linux/arm64, darwin/amd64, darwin/arm64
-// (Windows is intentionally not built).
+// Supported targets: linux/amd64, linux/arm64, linux/arm (v7), darwin/amd64,
+// darwin/arm64, windows/amd64.
 //
 // Lives under .dagger/ so Go's `./...` package matching ignores it and the
 // main module's build/test/e2e gates are unaffected. The internal/dagger SDK
@@ -23,12 +23,20 @@ type Ci struct{}
 // goImage is the toolchain image; matches the go directive in go.mod (go 1.26.x).
 const goImage = "golang:1.26"
 
-// releaseTargets is the supported OS/ARCH matrix. No Windows by design.
-var releaseTargets = []struct{ Goos, Goarch string }{
-	{"linux", "amd64"},
-	{"linux", "arm64"}, // aarch64
-	{"darwin", "amd64"},
-	{"darwin", "arm64"}, // Apple silicon
+// releaseTarget describes one cross-compilation target.
+type releaseTarget struct {
+	Goos, Goarch string
+	Goarm        string // "7" for linux/arm; empty otherwise
+}
+
+// releaseTargets is the supported OS/ARCH matrix.
+var releaseTargets = []releaseTarget{
+	{"linux", "amd64", ""},
+	{"linux", "arm64", ""},  // aarch64
+	{"linux", "arm", "7"},   // armv7 (Raspberry Pi, etc.)
+	{"darwin", "amd64", ""},
+	{"darwin", "arm64", ""}, // Apple silicon
+	{"windows", "amd64", ""},
 }
 
 // goBase returns a golang container with module/build caches and the source mounted.
@@ -66,10 +74,17 @@ func (m *Ci) Build(
 	out := dag.Directory()
 	for _, t := range releaseTargets {
 		name := fmt.Sprintf("siyuan-knowledge-sync_%s_%s_%s", version, t.Goos, t.Goarch)
-		bin := m.goBase(source).
+		if t.Goos == "windows" {
+			name += ".exe"
+		}
+		ctr := m.goBase(source).
 			WithEnvVariable("CGO_ENABLED", "0").
 			WithEnvVariable("GOOS", t.Goos).
-			WithEnvVariable("GOARCH", t.Goarch).
+			WithEnvVariable("GOARCH", t.Goarch)
+		if t.Goarm != "" {
+			ctr = ctr.WithEnvVariable("GOARM", t.Goarm)
+		}
+		bin := ctr.
 			WithExec([]string{
 				"go", "build", "-trimpath", "-ldflags", "-s -w",
 				"-o", "/out/" + name, "./cmd/siyuan-knowledge-sync",
