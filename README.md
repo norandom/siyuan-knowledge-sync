@@ -1,146 +1,158 @@
 # siyuan-knowledge-sync
 
-A sync client for [SiYuan](https://b3log.org/siyuan/) that features a bimodal ontology. Syncs markdown files from local folders (Git-style) to the SiYuan knowledge base.
+Sync a folder of markdown notes to [SiYuan](https://b3log.org/siyuan/). Every note gets a `domain` and `intent` tag that controls where it lands in your SiYuan wiki. The tool reads your Git repo, figures out what changed, and pushes only the differences.
 
-## Overview
+## Quick start
 
-siyuan-knowledge-sync reads markdown files tracked in a Git repository and uploads them to SiYuan as documents. It enforces a bimodal ontology — every note must declare a `domain` and `intent` in its YAML frontmatter — and routes files into the correct SiYuan notebook and hierarchy automatically.
-
-### Bimodal Ontology
-
-Every synced note requires two frontmatter fields:
-
-```yaml
----
-domain: engineering
-intent: reference
----
-```
-
-- **Domain** — the knowledge area (e.g. `engineering`, `finance`, `health`)
-- **Intent** — the note's purpose (e.g. `reference`, `decision`, `log`, `journal`)
-
-The ontology gate rejects notes with missing or invalid values. This keeps the SiYuan wiki structured and navigable.
-
-## Features
-
-- **Git-aware sync** — only processes files tracked by Git; respects renames and moves
-- **Ontology routing** — maps `domain` + `intent` to SiYuan notebooks and document paths
-- **Tag vocabulary** — enforces a controlled tag set; auto-fixes unknown tags
-- **Compliance auditing** — checks documents for schema violations, heading levels, block IDs, and tag issues
-- **Auto-fix** — repairs common problems (heading levels, missing attributes, TOC content)
-- **Bidirectional download** — pulls documents from SiYuan back to local markdown
-- **Migration tooling** — plan and apply bulk moves when ontology rules change
-- **MCP server** — exposes an MCP interface for agent-based access
-
-## Installation
+### 1. Install
 
 ```bash
-go install github.com/mc/Source/siyuan-knowledge-sync/cmd/siyuan-knowledge-sync@latest
+go install github.com/norandom/siyuan-knowledge-sync/cmd/siyuan-knowledge-sync@latest
 ```
 
 Or build from source:
 
 ```bash
-git clone https://github.com/mc/Source/siyuan-knowledge-sync.git
+git clone https://github.com/norandom/siyuan-knowledge-sync.git
 cd siyuan-knowledge-sync
 go build -o siyuan-knowledge-sync ./cmd/siyuan-knowledge-sync
 ```
 
-## Usage
+### 2. Configure
 
-### Sync files to SiYuan
-
-```bash
-siyuan-knowledge-sync sync --config config.yaml ./path/to/repo
-```
-
-### Download from SiYuan
-
-```bash
-siyuan-knowledge-sync download --config config.yaml ./output
-```
-
-### Audit for compliance issues
-
-```bash
-siyuan-knowledge-sync audit --config config.yaml ./path/to/repo
-```
-
-### View ontology schema
-
-```bash
-siyuan-knowledge-sync schema --json
-```
-
-### Configure frontmatter in existing files
-
-```bash
-siyuan-knowledge-sync configure ./path/to/files
-```
-
-### Migration
-
-```bash
-# Generate a migration plan
-siyuan-knowledge-sync migrate plan --config config.yaml
-
-# Apply a migration plan
-siyuan-knowledge-sync migrate apply plan.json
-```
-
-## Configuration
-
-Create a `config.yaml`:
+Create `.siyuan-sync.yaml` in your repo root (or anywhere — pass `-c path/to/config.yaml`):
 
 ```yaml
-siyuan:
-  endpoint: http://localhost:6806
-  token: your-api-token
-sync:
-  notebooks:
-    engineering: "20240101120000-abc1234"
-    finance: "20240101120000-def5678"
-tags:
-  vocabulary:
-    - reference
-    - decision
-    - log
-    - journal
-    - draft
+endpoint: http://localhost:6806
+token: your-siyuan-api-token
+repo_path: /path/to/your/markdown/repo
+autofix: true
 ```
 
-## Project Structure
+### 3. Tag your notes
 
-```
-cmd/siyuan-knowledge-sync/   CLI entry point (cobra commands)
-internal/
-  compliance/                 Audit checks and auto-fix
-  config/                     Configuration loading
-  git/                        Git scanner (tracked file enumeration)
-  mcp/                        MCP server implementation
-  migrate/                    Migration plan and apply
-  ontology/                   Domain/intent schema, routing, frontmatter
-  siyuan/                     SiYuan HTTP client
-  state/                      Sync state tracker
-  sync/                       Sync engine, asset handling, dashboard
-  tags/                       Tag extraction and frontmatter parsing
-  toc/                        Table of contents generation
-  types/                      Shared types
+Every markdown file needs a YAML frontmatter block with `domain` and `intent`:
+
+```yaml
+---
+domain: devops
+intent: sop
+---
+# How to deploy the staging server
+
+1. Build the image...
 ```
 
-## Development
+Run `siyuan-knowledge-sync schema --json` to see the full list of allowed values:
+
+| domain | SiYuan folder |
+|---|---|
+| `devops` | Sysadmin & DevOps |
+| `forensics` | Digital Forensics |
+| `security` | Security |
+| `ai-ml` | AI & ML |
+| `software-dev` | Software Development |
+| `quant-finance` | Quant Finance |
+
+| intent | Purpose |
+|---|---|
+| `config` | Configuration reference |
+| `sop` | Standard operating procedure |
+| `log` | Activity or incident log |
+| `decision` | Decision record |
+| `concept` | Conceptual explanation |
+
+### 4. Sync
 
 ```bash
-# Run tests
-go test ./...
-
-# Build
-go build ./cmd/siyuan-knowledge-sync
-
-# Lint (requires golangci-lint)
-golangci-lint run
+siyuan-knowledge-sync sync
 ```
+
+Only files tracked by Git that changed since the last sync get uploaded. New files are created in SiYuan under the folder matching their `domain`. Files already at their canonical path are left alone; files in the wrong folder get moved automatically.
+
+## Commands
+
+### `sync` — Upload changes to SiYuan
+
+```bash
+siyuan-knowledge-sync sync              # incremental sync
+siyuan-knowledge-sync sync --dry-run    # audit only, no changes
+```
+
+### `download` — Pull SiYuan content to local files
+
+```bash
+siyuan-knowledge-sync download                     # skip conflicts
+siyuan-knowledge-sync download --conflict overwrite # replace local files
+siyuan-knowledge-sync download --conflict merge     # merge content
+```
+
+### `audit` — Check files for compliance issues
+
+```bash
+siyuan-knowledge-sync audit             # report issues
+siyuan-knowledge-sync audit --autofix   # fix what can be fixed
+```
+
+Checks for: missing domain/intent, invalid values, bad heading levels, missing block IDs, unknown tags, TOC problems.
+
+### `schema` — Show ontology configuration
+
+```bash
+siyuan-knowledge-sync schema            # human-readable
+siyuan-knowledge-sync schema --json     # JSON output
+```
+
+### `migrate` — Bulk moves when ontology changes
+
+```bash
+siyuan-knowledge-sync migrate plan    # generate a plan
+siyuan-knowledge-sync migrate apply plan.json   # execute it
+```
+
+## Configuration reference
+
+Full `.siyuan-sync.yaml`:
+
+```yaml
+endpoint: http://localhost:6806
+token: your-api-token
+repo_path: /home/you/notes
+autofix: true
+
+# Optional: Cloudflare Access (Zero Trust)
+cf_access_client_id: your-cf-client-id
+cf_access_client_secret: your-cf-secret
+
+# Optional: override the default ontology
+ontology:
+  domains:
+    - id: devops
+      folder: Sysadmin & DevOps
+    - id: security
+      folder: Security
+  intents:
+    - id: sop
+    - id: log
+    - id: decision
+  tags:
+    - reference
+    - draft
+    - archived
+```
+
+When `ontology:` is omitted, the built-in defaults (see `schema --json`) apply. When provided, it fully replaces the defaults.
+
+## How it works
+
+1. Scans your Git repo for tracked `.md` files
+2. Reads YAML frontmatter to extract `domain` and `intent`
+3. Validates against the ontology schema (rejects invalid values)
+4. Routes each file to the correct SiYuan notebook and folder
+5. Uploads only changed files (tracks state between runs)
+6. Moves files that are in the wrong folder (git mv + commit)
+7. Rewrites image/asset links and uploads assets
+8. Prunes SiYuan docs for locally deleted files
 
 ## License
 
