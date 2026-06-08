@@ -14,7 +14,9 @@ package migrate
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -185,7 +187,7 @@ func applyKeep(ctx context.Context, engine Syncer, repoPath string, entry PlanEn
 		ontology.Router{}.CanonicalFolder(entry.Domain),
 		filepath.Base(entry.SourcePath),
 	))
-	if _, srcErr := os.Stat(filepath.Join(repoPath, entry.SourcePath)); os.IsNotExist(srcErr) {
+	if _, srcErr := os.Stat(filepath.Join(repoPath, entry.SourcePath)); errors.Is(srcErr, fs.ErrNotExist) {
 		if _, tgtErr := os.Stat(filepath.Join(repoPath, canonical)); tgtErr == nil {
 			outcome.NewPath = canonical
 			return

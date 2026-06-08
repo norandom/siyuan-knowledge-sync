@@ -59,11 +59,29 @@ type searchResultItem struct {
 	Excerpt string `json:"excerpt"`
 }
 
+// escapeSQLLiteral escapes a string for use in a SQL single-quoted literal.
+// It doubles single quotes to prevent breakout. This is necessary because the
+// SiYuan API does not support parameterized queries.
+func escapeSQLLiteral(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
+}
+
+// escapeLIKEPattern escapes special LIKE wildcards (%, _, [) so they are
+// treated as literal characters in a LIKE pattern. Combined with
+// escapeSQLLiteral, this prevents both SQL injection and LIKE pattern
+// injection from user-supplied search queries.
+func escapeLIKEPattern(s string) string {
+	s = strings.ReplaceAll(s, "[", "[[]")
+	s = strings.ReplaceAll(s, "%", "[%]")
+	s = strings.ReplaceAll(s, "_", "[_]")
+	return s
+}
+
 func (s *MCPServer) handleSearch(ctx context.Context, req *mcp.CallToolRequest, args searchArgs) (*mcp.CallToolResult, any, error) {
-	escaped := strings.ReplaceAll(args.Query, "'", "''")
+	safe := escapeSQLLiteral(escapeLIKEPattern(args.Query))
 	sqlStmt := fmt.Sprintf(
 		"SELECT id, name, box, hpath, content FROM blocks WHERE type = 'd' AND (content LIKE '%%%s%%' OR name LIKE '%%%s%%') LIMIT 20",
-		escaped, escaped,
+		safe, safe,
 	)
 
 	rows, err := s.client.SQLQuery(ctx, sqlStmt)
@@ -121,7 +139,7 @@ func (s *MCPServer) handleRetrieve(ctx context.Context, req *mcp.CallToolRequest
 	}
 
 	metaRows, err := s.client.SQLQuery(ctx,
-		fmt.Sprintf("SELECT name, box FROM blocks WHERE id = '%s'", strings.ReplaceAll(args.ID, "'", "''")),
+		fmt.Sprintf("SELECT name, box FROM blocks WHERE id = '%s'", escapeSQLLiteral(args.ID)),
 	)
 	title := export.HPath
 	notebook := ""

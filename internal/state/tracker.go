@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -31,7 +32,7 @@ func NewStateTracker(repoPath string) (*StateTracker, error) {
 
 	data, err := os.ReadFile(t.filePath)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return t, nil
 		}
 		return t, nil

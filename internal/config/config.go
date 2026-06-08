@@ -1,8 +1,12 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
+	"net/url"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -62,7 +66,7 @@ type OntologyIntent struct {
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("config file not found at %s", path)
 		}
 		return nil, fmt.Errorf("failed to read config file: %w", err)
@@ -80,6 +84,9 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.Endpoint == "" {
 		return nil, fmt.Errorf("missing required field \"endpoint\" in config file %s", path)
 	}
+	if err := validateEndpoint(cfg.Endpoint); err != nil {
+		return nil, fmt.Errorf("invalid \"endpoint\" in config file %s: %w", path, err)
+	}
 	if cfg.Token == "" {
 		return nil, fmt.Errorf("missing required field \"token\" in config file %s", path)
 	}
@@ -88,4 +95,22 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+// validateEndpoint checks that the endpoint is a well-formed HTTP(S) URL.
+// It rejects empty strings, malformed URLs, and non-HTTP schemes (file://,
+// javascript:, etc.) to prevent credential leakage or unexpected behavior.
+func validateEndpoint(endpoint string) error {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return fmt.Errorf("not a valid URL: %w", err)
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("scheme must be http or https, got %q", u.Scheme)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("missing host")
+	}
+	return nil
 }

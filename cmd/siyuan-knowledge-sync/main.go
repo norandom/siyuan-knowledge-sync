@@ -47,8 +47,13 @@ func newRootCommand() *cobra.Command {
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.LoadConfig(configPath)
 			if err != nil {
-				// Silent skip: let subcommands that need a config raise
-				// the error themselves. Help, schema, etc. proceed.
+				// Warn on stderr when the config exists but is malformed.
+				// A missing file is expected for help/schema subcommands,
+				// but a parse or validation error should be visible so the
+				// operator can fix it before running sync/download/audit.
+				if !os.IsNotExist(err) {
+					fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+				}
 				return nil
 			}
 			if cfg.Ontology == nil {
