@@ -1,0 +1,55 @@
+# .siyuan-sync.yaml — SiYuan Knowledge Sync configuration
+#
+# Copy this file to .siyuan-sync.yaml and fill in your values.
+# The real config file is gitignored; never commit it.
+
+# SiYuan API endpoint (required)
+endpoint: http://localhost:6806
+
+# SiYuan API token (required) — get it from Settings → About → API Token
+token: your-api-token
+
+# Path to your markdown repo (required)
+repo_path: /home/you/notes
+
+# Auto-fix compliance issues on sync (default: false)
+autofix: true
+
+# Optional: Cloudflare Access (Zero Trust) credentials
+# Leave empty if your SiYuan endpoint is not behind CF Access.
+# cf_access_client_id: your-cf-client-id
+# cf_access_client_secret: your-cf-secret
+
+# Optional: override the default ontology.
+# Omit this section entirely to use built-in defaults.
+# When provided, it fully replaces the defaults.
+ontology:
+  domains:
+    - id: devops
+      folder: Sysadmin & DevOps
+    - id: forensics
+      folder: Digital Forensics
+    - id: security
+      folder: Security
+    - id: ai-ml
+      folder: AI & ML
+    - id: software-dev
+      folder: Software Development
+    - id: quant-finance
+      folder: Quant Finance
+
+  intents:
+    - id: config
+    - id: sop
+    - id: log
+    - id: decision
+    - id: concept
+
+  # Optional: controlled tag vocabulary.
+  # - Omit `tags:` entirely → open vocabulary (any tag accepted).
+  # - `tags: []` → closed empty vocabulary (every tag rejected).
+  # - `tags: [reference, draft]` → only listed tags accepted.
+  tags:
+    - reference
+    - draft
+    - archived

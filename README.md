@@ -68,7 +68,7 @@ Run `siyuan-knowledge-sync schema --json` to see the full list of allowed values
 siyuan-knowledge-sync sync
 ```
 
-Only files tracked by Git that changed since the last sync get uploaded. New files are created in SiYuan under the folder matching their `domain`. Files already at their canonical path are left alone; files in the wrong folder get moved automatically.
+The sync is incremental: only Git-tracked files that changed since the last run get uploaded. New notes land in the SiYuan folder matching their `domain`. Notes already at the right path are skipped; notes in the wrong folder get moved (git mv + commit).
 
 ## Commands
 
@@ -141,18 +141,11 @@ ontology:
     - archived
 ```
 
-When `ontology:` is omitted, the built-in defaults (see `schema --json`) apply. When provided, it fully replaces the defaults.
+Omit `ontology:` to use the built-in defaults (run `schema --json` to see them). Provide it to replace the defaults entirely.
 
 ## How it works
 
-1. Scans your Git repo for tracked `.md` files
-2. Reads YAML frontmatter to extract `domain` and `intent`
-3. Validates against the ontology schema (rejects invalid values)
-4. Routes each file to the correct SiYuan notebook and folder
-5. Uploads only changed files (tracks state between runs)
-6. Moves files that are in the wrong folder (git mv + commit)
-7. Rewrites image/asset links and uploads assets
-8. Prunes SiYuan docs for locally deleted files
+The tool scans Git-tracked `.md` files, reads `domain`/`intent` from frontmatter, validates against the ontology, and routes each file to the right SiYuan notebook. Only changed files upload. It moves misplaced files (git mv + commit), rewrites asset links, uploads images, and prunes SiYuan docs for locally deleted files.
 
 ## License
 

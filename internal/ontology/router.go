@@ -9,51 +9,29 @@ import (
 )
 
 // Router resolves the canonical wiki folder for a Domain and decides
-// whether a file at a given local path must move to that folder. The
-// router also scans markdown bodies for relative asset references that
-// the move would relocate, and reports per-reference AssetWarnings the
-// caller can surface (warnings, not errors — Requirement 9.4: asset
-// breakage never blocks the move).
-//
-// Preconditions for Route:
-//   - The Domain passed in has already cleared ValidateDomain.
-//   - localPath is interpreted as a forward-slash path (filepath.ToSlash
-//     is applied defensively); it may be absolute or repo-relative.
-//
-// Postconditions:
-//   - For RouteNoop, TargetPath is empty and AssetWarnings is empty.
-//   - For RouteMove, TargetPath is <canonical-folder>/<basename(localPath)>;
-//     subdirectory structure under the source is intentionally NOT mirrored
-//     under the canonical folder (per design: "preserving the filename").
+// whether a file needs to move there. It also scans for relative asset
+// references that the move would relocate (reported as warnings, not errors).
 type Router struct {
 	repoPath string
 }
 
-// NewRouter returns a Router whose AssetWarning target-existence probe
-// resolves paths against repoPath rather than the process working
-// directory. Production call sites that run outside the repo root (the
-// migrate executor and the sync engine) must use this constructor.
-// A zero-value Router{} still works; its probe falls back to cwd-relative
-// os.Stat, which is the behavior the unit tests rely on.
+// NewRouter returns a Router that resolves asset paths relative to repoPath.
+// A zero-value Router falls back to cwd-relative resolution.
 func NewRouter(repoPath string) Router {
 	return Router{repoPath: repoPath}
 }
 
-// RouteAction is the discriminator for what the gate should do with a
-// file declaring a given Domain at a given local path.
+// RouteAction tells the engine what to do with a file.
 type RouteAction int
 
 const (
-	// RouteNoop means the file is already at (or beneath) its canonical
-	// folder; the engine performs no `git mv`.
+	// RouteNoop: file is already at or beneath its canonical folder.
 	RouteNoop RouteAction = iota
-	// RouteMove means the file's local path is outside the canonical
-	// folder for its declared Domain; the engine must `git mv` it to
-	// <canonical>/<basename>.
+	// RouteMove: file must move to <canonical>/<basename>.
 	RouteMove
 )
 
-// RouteDecision is the structured output of Router.Route.
+// RouteDecision is the output of Router.Route.
 type RouteDecision struct {
 	Action        RouteAction
 	SourcePath    string
@@ -61,9 +39,8 @@ type RouteDecision struct {
 	AssetWarnings []AssetWarning
 }
 
-// AssetWarning describes a single relative asset reference whose resolved
-// path would change after the routing move. Emitted regardless of whether
-// the target asset exists; TargetExists records that probe result.
+// AssetWarning is a relative asset reference whose resolved path would change
+// after a routing move.
 type AssetWarning struct {
 	Reference    string // raw markdown reference, e.g. "assets/foo.png"
 	OldResolved  string // path resolved against the source file's directory
@@ -71,20 +48,9 @@ type AssetWarning struct {
 	TargetExists bool   // os.Stat(NewResolved) == nil
 }
 
-// defaultCanonicalFolders is the compile-time seed for the package-level
-// Domain → canonical-folder map. Each entry is a top-level repo-relative
-// folder so the sync engine's topLevelFolder() resolves it to a SiYuan
-// notebook of the same name — every domain therefore becomes its OWN
-// SiYuan notebook, instead of all domains sharing a single `wiki`
-// notebook with hpath subfolders. This map is the source of truth for the
-// "no configuration section" default behavior (Requirement 6.1); a later
-// Configure(opts) entry point may replace canonicalFolders with operator-
-// supplied values, but the values here remain the fallback used at
-// package init.
-//
-// Adding, removing, or renaming an entry is a Revalidation Trigger
-// (design.md): test fixtures, e2e hpath assertions, and the SiYuan-side
-// notebook layout all key off these strings.
+// defaultCanonicalFolders maps each Domain to its top-level repo-relative folder.
+// Each domain becomes its own SiYuan notebook. Changing these requires updating
+// test fixtures and e2e assertions.
 var defaultCanonicalFolders = map[Domain]string{
 	DevOps:       "Sysadmin & DevOps",
 	Forensics:    "Digital Forensics",
@@ -94,18 +60,11 @@ var defaultCanonicalFolders = map[Domain]string{
 	QuantFinance: "Quant Finance",
 }
 
-// canonicalFolders is the package-private Domain → canonical-folder map
-// used by every accessor. It is seeded at package init from
-// defaultCanonicalFolders and is mutable: a future Configure(opts) call
-// (added in a later task) replaces this map's contents so
-// Router.CanonicalFolder() reflects the configured ontology. Production
-// reads always go through Router.CanonicalFolder, which reads from this
-// mutable storage rather than the compile-time defaults.
+// canonicalFolders is the runtime Domain-to-folder map. Seeded from
+// defaultCanonicalFolders; replaceable via Configure().
 var canonicalFolders = copyFolderMap(defaultCanonicalFolders)
 
-// copyFolderMap returns a shallow copy of src. Used to seed
-// canonicalFolders from defaultCanonicalFolders at package init so the
-// mutable state never aliases the compile-time defaults.
+// copyFolderMap returns a shallow copy of src.
 func copyFolderMap(src map[Domain]string) map[Domain]string {
 	out := make(map[Domain]string, len(src))
 	for k, v := range src {
@@ -115,10 +74,7 @@ func copyFolderMap(src map[Domain]string) map[Domain]string {
 }
 
 // CanonicalFolder returns the canonical wiki folder for d.
-//
-// Panics on an unknown Domain (validation must precede routing — design.md
-// `ontology/router`). This is defensive: ValidateDomain at the gate
-// upstream means an unknown value can never reach the Router in production.
+// Panics on unknown Domain — ValidateDomain must run before routing.
 func (Router) CanonicalFolder(d Domain) string {
 	folder, ok := canonicalFolders[d]
 	if !ok {
@@ -130,21 +86,9 @@ func (Router) CanonicalFolder(d Domain) string {
 	return folder
 }
 
-// Route decides what action the gate must take for a file declaring
-// `domain: d` at localPath. See RouteDecision for the output shape and
-// the package doc for the action semantics.
-//
-// Algorithm:
-//  1. Compute canonical = CanonicalFolder(d).
-//  2. If localPath is already under canonical (top-level OR nested), the
-//     action is RouteNoop. The router does NOT flatten existing sub-
-//     directory structure beneath the canonical root.
-//  3. Otherwise the action is RouteMove with
-//     TargetPath = canonical + "/" + filepath.Base(localPath).
-//  4. Scan body for relative markdown asset references and emit an
-//     AssetWarning for each reference whose resolved location would
-//     differ after the move. For RouteNoop, no AssetWarnings are emitted
-//     (the resolved location is unchanged by definition).
+// Route decides whether a file declaring domain d at localPath needs to move
+// to the canonical folder. If so, it also scans for asset references that
+// the move would relocate.
 func (r Router) Route(d Domain, localPath string, body []byte) RouteDecision {
 	canonical := r.CanonicalFolder(d)
 	srcSlash := filepath.ToSlash(filepath.Clean(localPath))
@@ -180,17 +124,12 @@ func underCanonical(srcSlash, canonical string) bool {
 	return strings.HasPrefix(dir, prefix) || strings.HasPrefix(srcSlash, prefix)
 }
 
-// markdownRefPattern matches both image (![alt](path)) and link
-// ([text](path)) markdown references. Capture group 1 is the inner path.
-// We deliberately keep this regex simple — it does not attempt to handle
-// titled links ([text](path "title")) or balanced parens inside the URL.
-// Those edge cases would not change the OldResolved/NewResolved decision
-// in the migration domain we care about.
+// markdownRefPattern matches image and link references. Capture group 1 is the path.
+// Does not handle titled links or balanced parens inside URLs (not needed here).
 var markdownRefPattern = regexp.MustCompile(`!?\[[^\]]*\]\(([^)\s]+)\)`)
 
-// scanAssetRefs walks body line by line, tracking ``` code-block state,
-// and collects an AssetWarning for each relative markdown reference whose
-// resolved path would change between srcSlash and targetSlash.
+// scanAssetRefs finds relative markdown references in body whose resolved
+// path would change between srcSlash and targetSlash.
 func scanAssetRefs(body []byte, srcSlash, targetSlash, repoPath string) []AssetWarning {
 	if len(body) == 0 {
 		return nil
@@ -236,10 +175,8 @@ func scanAssetRefs(body []byte, srcSlash, targetSlash, repoPath string) []AssetW
 	return out
 }
 
-// isRelativeAssetRef filters references the migration cares about:
-// only relative paths that point at a file in the working tree. Everything
-// network-bound (http, https, mailto), absolute (/foo), home-prefixed
-// (~/foo), or empty is skipped.
+// isRelativeAssetRef returns true for relative file paths only.
+// Skips URLs, absolute paths, fragments, wikilinks, and empty refs.
 func isRelativeAssetRef(ref string) bool {
 	if ref == "" {
 		return false

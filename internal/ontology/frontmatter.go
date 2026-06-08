@@ -1,38 +1,15 @@
 package ontology
 
-// frontmatter.go implements AddOntology, the yaml.Node-based rewriter that
-// inserts (or replaces) the two ontology keys `domain:` and `intent:` in a
-// markdown file's YAML frontmatter while preserving every other key, its
-// value, and its declaration order verbatim.
+// AddOntology rewrites YAML frontmatter to insert or replace `domain:` and
+// `intent:`, preserving all other keys and their order.
 //
-// Preservation guard
+// A post-encode guard re-parses both sides and compares non-ontology keys
+// byte-for-byte. Any mismatch returns ErrUnsafeRewrite.
 //
-//	A post-encode verifier re-parses both the input frontmatter and the newly
-//	emitted frontmatter into top-level mappings, then for every key that is
-//	not `domain:`/`intent:` it re-Marshals each side's value node and demands
-//	byte-equal output. Any mismatch — value bytes, presence — causes the
-//	rewriter to return ErrUnsafeRewrite without writing.
-//
-// Temporal-field invariant (Req 8.1-8.4)
-//
-//	`date`, `lastmod`, `created`, `updated`, `original_date` are explicitly
-//	enumerated and checked FIRST, before the general preservation guard, so
-//	regressions on temporal fields fail loud with a dedicated check. The
-//	general guard covers these keys too — the enumeration is defense in
-//	depth.
-//
-// Known limitations (documented per the design "Open Questions / Risks")
-//
-//	yaml.v3's Node API can lose some standalone-line comments on
-//	re-encode. The guard compares VALUE BYTES of each non-ontology key
-//	(via yaml.Marshal of the value node) — not surrounding comments — so
-//	comment loss for non-ontology keys is tolerated. The temporal-fields
-//	byte-identity (Req 8.1) is unaffected: scalar values round-trip cleanly.
-//
-//	CRLF line endings in the input are normalized to LF in the output
-//	frontmatter and body. This is a deliberate concession: re-emitting via
-//	yaml.Encoder produces LF, and concatenating with a CRLF body would yield
-//	mixed line endings. The body's textual content is preserved.
+// Known limitations:
+//   - yaml.v3 may drop standalone comments on re-encode. The guard compares
+//     value bytes only, so comment loss is tolerated.
+//   - CRLF inputs are normalized to LF.
 
 import (
 	"bytes"
@@ -42,15 +19,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// ErrUnsafeRewrite is returned by AddOntology when the post-encode
-// preservation guard detects that the rewrite would mutate, drop, or add
-// any key that is not `domain:` or `intent:`. The caller MUST NOT write the
-// proposed output to disk.
+// ErrUnsafeRewrite is returned when the rewrite would mutate a non-ontology key.
 var ErrUnsafeRewrite = errors.New("ontology: rewriter would touch a non-ontology key")
 
-// temporalKeys are the non-negotiable byte-identical frontmatter fields
-// covered by both the dedicated temporal check and the general preservation
-// guard (Req 8.1, 8.2).
+// temporalKeys are checked separately before the general preservation guard.
 var temporalKeys = []string{
 	"date",
 	"lastmod",
@@ -59,23 +31,18 @@ var temporalKeys = []string{
 	"original_date",
 }
 
-// AddOntology inserts (or replaces, when values differ) the two scalar keys
-// `domain:` and `intent:` in the YAML frontmatter of content, preserving all
-// other keys, their values, and their declaration order. If content has no
-// frontmatter, AddOntology prepends a fresh block with ONLY the two ontology
-// keys (no synthesized temporal fields).
+// AddOntology inserts (or replaces) `domain:` and `intent:` in the YAML
+// frontmatter of content, preserving all other keys. If content has no
+// frontmatter, a fresh block is prepended with only the two ontology keys.
 //
-// On any encoding outcome that would mutate, drop, or add a non-ontology key
-// (per the post-encode preservation guard), AddOntology returns
-// (nil, ErrUnsafeRewrite) without writing.
+// Returns (nil, ErrUnsafeRewrite) if the rewrite would change a non-ontology key.
 func AddOntology(content []byte, d Domain, i Intent) ([]byte, error) {
-	// CRLF normalization (documented limitation): work on LF internally.
+	// CRLF normalization: work on LF internally.
 	content = bytes.ReplaceAll(content, []byte("\r\n"), []byte("\n"))
 
 	fmBytes, body, hasFM := splitFrontmatter(content)
 
-	// No frontmatter → fresh prepend. Hard rule: do NOT synthesize any
-	// temporal field. Only the two ontology keys.
+	// No frontmatter: prepend a fresh block with only ontology keys.
 	if !hasFM {
 		fresh := []byte(fmt.Sprintf("---\ndomain: %s\nintent: %s\n---\n", string(d), string(i)))
 		out := make([]byte, 0, len(fresh)+len(content))
@@ -92,10 +59,7 @@ func AddOntology(content []byte, d Domain, i Intent) ([]byte, error) {
 
 	root := mappingRoot(&doc)
 	if root == nil {
-		// An empty frontmatter or a non-mapping document: synthesize a
-		// mapping containing only the two ontology keys (the caller's
-		// guarantee that "other keys" are preserved is vacuous when there
-		// are none). Still emit through yaml so style is consistent.
+		// Empty or non-mapping frontmatter: synthesize a mapping with just the ontology keys.
 		root = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 		doc = yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{root}}
 	}
