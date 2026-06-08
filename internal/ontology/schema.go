@@ -8,7 +8,6 @@
 package ontology
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -117,14 +116,6 @@ func (v SchemaViolation) Error() string {
 		"ontology schema violation in %s: key=%q offending=%q allowed=[%s]",
 		v.File, v.Key, v.OffendingValue, strings.Join(v.Allowed, ","),
 	)
-}
-
-// MarshalJSON is provided explicitly so that *SchemaViolation values
-// emitted as errors round-trip through json.Marshal with the same shape
-// as the struct.
-func (v SchemaViolation) MarshalJSON() ([]byte, error) {
-	type alias SchemaViolation
-	return json.Marshal(alias(v))
 }
 
 // allowedDomainStrings returns the AllDomains values as a fresh []string,

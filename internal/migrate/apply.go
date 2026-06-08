@@ -22,8 +22,14 @@ import (
 
 	"siyuan-knowledge-sync/internal/ontology"
 	"siyuan-knowledge-sync/internal/siyuan"
-	"siyuan-knowledge-sync/internal/sync"
 )
+
+// Syncer is the subset of the sync engine that migrate/apply needs.
+// Defined here to invert the dependency — the concrete sync.SyncEngine
+// satisfies this interface without migrate importing the sync package.
+type Syncer interface {
+	RouteAndSync(ctx context.Context, relPath string) error
+}
 
 // Apply executes a validated MigrationPlan, in plan order, against engine +
 // client and returns a MigrationReport summarising every entry's outcome.
@@ -50,7 +56,7 @@ import (
 // duplicate (the engine's Req 4.3 behavior). This is documented per task
 // brief; tightening to a structured pre-write probe is tracked as a
 // follow-up.
-func Apply(ctx context.Context, plan MigrationPlan, engine *sync.SyncEngine, client *siyuan.Client, repoPath string) (*MigrationReport, error) {
+func Apply(ctx context.Context, plan MigrationPlan, engine Syncer, client *siyuan.Client, repoPath string) (*MigrationReport, error) {
 	if err := plan.Validate(); err != nil {
 		return nil, fmt.Errorf("apply: invalid plan: %w", err)
 	}
@@ -109,7 +115,7 @@ func Apply(ctx context.Context, plan MigrationPlan, engine *sync.SyncEngine, cli
 //
 // Any step's error lands as StatusError; subsequent steps are skipped for
 // that entry but the loop continues with the next plan entry.
-func applyKeep(ctx context.Context, engine *sync.SyncEngine, repoPath string, entry PlanEntry, outcome *EntryOutcome) {
+func applyKeep(ctx context.Context, engine Syncer, repoPath string, entry PlanEntry, outcome *EntryOutcome) {
 	fullPath := filepath.Join(repoPath, entry.SourcePath)
 	original, err := os.ReadFile(fullPath)
 	if err != nil {

@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -18,44 +17,12 @@ import (
 	"siyuan-knowledge-sync/internal/git"
 	"siyuan-knowledge-sync/internal/siyuan"
 	"siyuan-knowledge-sync/internal/state"
+	"siyuan-knowledge-sync/internal/testutil"
 	"siyuan-knowledge-sync/internal/types"
 )
 
-func gitCmd(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
-		"GIT_AUTHOR_NAME=test",
-		"GIT_AUTHOR_EMAIL=test@test.com",
-		"GIT_COMMITTER_NAME=test",
-		"GIT_COMMITTER_EMAIL=test@test.com",
-	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v failed: %s\n%s", args, err, out)
-	}
-}
-
-func writeGitFile(t *testing.T, dir, path, content string) {
-	t.Helper()
-	fullPath := filepath.Join(dir, path)
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(fullPath, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func setupGitDir(t *testing.T) string {
-	t.Helper()
-	dir, err := os.MkdirTemp("", "sync-engine-test-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	gitCmd(t, dir, "init")
-	return dir
+	return testutil.SetupGitRepo(t, "sync-engine-test")
 }
 
 type mockSiYuanHandler struct {
@@ -259,9 +226,9 @@ func TestSync_NewFiles_CreatesDocuments(t *testing.T) {
 	dir := setupGitDir(t)
 	defer os.RemoveAll(dir)
 
-	writeGitFile(t, dir, "notebook/sub/file.md", "# Hello\n\nWorld\n")
-	gitCmd(t, dir, "add", "notebook/sub/file.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "notebook/sub/file.md", "# Hello\n\nWorld\n")
+	testutil.GitCmd(t, dir, "add", "notebook/sub/file.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -305,9 +272,9 @@ func TestSync_ModifiedFiles_UpdatesDocuments(t *testing.T) {
 	dir := setupGitDir(t)
 	defer os.RemoveAll(dir)
 
-	writeGitFile(t, dir, "notes/doc.md", "# Original")
-	gitCmd(t, dir, "add", "notes/doc.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "notes/doc.md", "# Original")
+	testutil.GitCmd(t, dir, "add", "notes/doc.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -324,9 +291,9 @@ func TestSync_ModifiedFiles_UpdatesDocuments(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	writeGitFile(t, dir, "notes/doc.md", "# Modified Content")
-	gitCmd(t, dir, "add", "notes/doc.md")
-	gitCmd(t, dir, "commit", "-m", "modified")
+	testutil.WriteFile(t, dir, "notes/doc.md", "# Modified Content")
+	testutil.GitCmd(t, dir, "add", "notes/doc.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "modified")
 
 	scanner, err := git.NewGitScanner(dir)
 	if err != nil {
@@ -361,10 +328,10 @@ func TestSync_FolderHierarchyPreserved(t *testing.T) {
 	dir := setupGitDir(t)
 	defer os.RemoveAll(dir)
 
-	writeGitFile(t, dir, "journal/2024/01/entry.md", "# January Entry")
-	writeGitFile(t, dir, "projects/code/readme.md", "# Code Readme")
-	gitCmd(t, dir, "add", "journal/2024/01/entry.md", "projects/code/readme.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "journal/2024/01/entry.md", "# January Entry")
+	testutil.WriteFile(t, dir, "projects/code/readme.md", "# Code Readme")
+	testutil.GitCmd(t, dir, "add", "journal/2024/01/entry.md", "projects/code/readme.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -411,10 +378,10 @@ func TestSync_SkipsUnchangedFiles(t *testing.T) {
 	dir := setupGitDir(t)
 	defer os.RemoveAll(dir)
 
-	writeGitFile(t, dir, "notes/a.md", "# A")
-	writeGitFile(t, dir, "notes/b.md", "# B")
-	gitCmd(t, dir, "add", "notes/a.md", "notes/b.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "notes/a.md", "# A")
+	testutil.WriteFile(t, dir, "notes/b.md", "# B")
+	testutil.GitCmd(t, dir, "add", "notes/a.md", "notes/b.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -429,7 +396,7 @@ func TestSync_SkipsUnchangedFiles(t *testing.T) {
 		t.Fatalf("first sync: expected 2 created, got %d", len(report.Created))
 	}
 
-	writeGitFile(t, dir, "notes/a.md", "# A - Modified")
+	testutil.WriteFile(t, dir, "notes/a.md", "# A - Modified")
 	// Deterministically mark a.md as modified-after-sync. Relying on natural
 	// mtime + a short sleep is flaky on filesystems with coarse mtime
 	// granularity (e.g. containerized CI). git add/commit does not alter the
@@ -438,8 +405,8 @@ func TestSync_SkipsUnchangedFiles(t *testing.T) {
 	if err := os.Chtimes(filepath.Join(dir, "notes/a.md"), future, future); err != nil {
 		t.Fatal(err)
 	}
-	gitCmd(t, dir, "add", "notes/a.md")
-	gitCmd(t, dir, "commit", "-m", "modify a")
+	testutil.GitCmd(t, dir, "add", "notes/a.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "modify a")
 
 	scanner, err := git.NewGitScanner(dir)
 	if err != nil {
@@ -478,10 +445,10 @@ func TestSync_ReportCounts(t *testing.T) {
 	dir := setupGitDir(t)
 	defer os.RemoveAll(dir)
 
-	writeGitFile(t, dir, "nb/new.md", "# New")
-	writeGitFile(t, dir, "nb/err.md", "# Error")
-	gitCmd(t, dir, "add", "nb/new.md", "nb/err.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "nb/new.md", "# New")
+	testutil.WriteFile(t, dir, "nb/err.md", "# Error")
+	testutil.GitCmd(t, dir, "add", "nb/new.md", "nb/err.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	errPath := filepath.Join(dir, "nb/err.md")
 	if err := os.Chmod(errPath, 0); err != nil {
@@ -511,7 +478,7 @@ func TestSync_ComplianceRunsBeforeUpload(t *testing.T) {
 	dir := setupGitDir(t)
 	defer os.RemoveAll(dir)
 
-	writeGitFile(t, dir, "notes/doc.md", `---
+	testutil.WriteFile(t, dir, "notes/doc.md", `---
 title: Test
 ---
 
@@ -523,8 +490,8 @@ title: Test
 
 Content.
 `)
-	gitCmd(t, dir, "add", "notes/doc.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.GitCmd(t, dir, "add", "notes/doc.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -587,11 +554,11 @@ func TestSync_ErrorPerFileDoesNotAbort(t *testing.T) {
 	dir := setupGitDir(t)
 	defer os.RemoveAll(dir)
 
-	writeGitFile(t, dir, "nb/good.md", "# Good")
-	writeGitFile(t, dir, "nb/bad_perm.md", "# Will Fail")
-	writeGitFile(t, dir, "nb/also_good.md", "# Also Good")
-	gitCmd(t, dir, "add", "nb/good.md", "nb/bad_perm.md", "nb/also_good.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "nb/good.md", "# Good")
+	testutil.WriteFile(t, dir, "nb/bad_perm.md", "# Will Fail")
+	testutil.WriteFile(t, dir, "nb/also_good.md", "# Also Good")
+	testutil.GitCmd(t, dir, "add", "nb/good.md", "nb/bad_perm.md", "nb/also_good.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	badPath := filepath.Join(dir, "nb/bad_perm.md")
 	if err := os.Chmod(badPath, 0); err != nil {
@@ -621,9 +588,9 @@ func TestSync_RootLevelMdMapsToDefaultNotebook(t *testing.T) {
 	dir := setupGitDir(t)
 	defer os.RemoveAll(dir)
 
-	writeGitFile(t, dir, "readme.md", "# Readme\n\nRoot level file.\n")
-	gitCmd(t, dir, "add", "readme.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "readme.md", "# Readme\n\nRoot level file.\n")
+	testutil.GitCmd(t, dir, "add", "readme.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -654,9 +621,9 @@ func TestSync_StateTrackerUpdatedAfterSync(t *testing.T) {
 	dir := setupGitDir(t)
 	defer os.RemoveAll(dir)
 
-	writeGitFile(t, dir, "notes/a.md", "# A")
-	gitCmd(t, dir, "add", "notes/a.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "notes/a.md", "# A")
+	testutil.GitCmd(t, dir, "add", "notes/a.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	_, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -703,10 +670,10 @@ func TestSync_PreSeededState_ModifiedDetection(t *testing.T) {
 	dir := setupGitDir(t)
 	defer os.RemoveAll(dir)
 
-	writeGitFile(t, dir, "notes/existing.md", "# Original")
-	writeGitFile(t, dir, "notes/new.md", "# New File")
-	gitCmd(t, dir, "add", "notes/existing.md", "notes/new.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "notes/existing.md", "# Original")
+	testutil.WriteFile(t, dir, "notes/new.md", "# New File")
+	testutil.GitCmd(t, dir, "add", "notes/existing.md", "notes/new.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	_, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -754,9 +721,9 @@ func TestSync_SiYuanCreateErrorRecorded(t *testing.T) {
 	dir := setupGitDir(t)
 	defer os.RemoveAll(dir)
 
-	writeGitFile(t, dir, "notes/fail.md", "# Will Fail")
-	gitCmd(t, dir, "add", "notes/fail.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "notes/fail.md", "# Will Fail")
+	testutil.GitCmd(t, dir, "add", "notes/fail.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -804,10 +771,10 @@ func TestSync_NotebookReusedAcrossFiles(t *testing.T) {
 	dir := setupGitDir(t)
 	defer os.RemoveAll(dir)
 
-	writeGitFile(t, dir, "wiki/a.md", "# A")
-	writeGitFile(t, dir, "wiki/b.md", "# B")
-	gitCmd(t, dir, "add", "wiki/a.md", "wiki/b.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "wiki/a.md", "# A")
+	testutil.WriteFile(t, dir, "wiki/b.md", "# B")
+	testutil.GitCmd(t, dir, "add", "wiki/a.md", "wiki/b.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -831,11 +798,11 @@ func TestSync_AutofixEnabled(t *testing.T) {
 	dir := setupGitDir(t)
 	defer os.RemoveAll(dir)
 
-	writeGitFile(t, dir, "wiki/doc.md", `### Bad Heading
+	testutil.WriteFile(t, dir, "wiki/doc.md", `### Bad Heading
 Some content {: myattr="value"}
 `)
-	gitCmd(t, dir, "add", "wiki/doc.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.GitCmd(t, dir, "add", "wiki/doc.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -867,11 +834,11 @@ func TestSync_AutofixDisabled(t *testing.T) {
 	dir := setupGitDir(t)
 	defer os.RemoveAll(dir)
 
-	writeGitFile(t, dir, "wiki/doc.md", `### Bad Heading
+	testutil.WriteFile(t, dir, "wiki/doc.md", `### Bad Heading
 {: myattr="value"}
 `)
-	gitCmd(t, dir, "add", "wiki/doc.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.GitCmd(t, dir, "add", "wiki/doc.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -903,10 +870,10 @@ func TestSync_StatePersistedOnError(t *testing.T) {
 	dir := setupGitDir(t)
 	defer os.RemoveAll(dir)
 
-	writeGitFile(t, dir, "nb/good.md", "# Good")
-	writeGitFile(t, dir, "nb/bad_perm.md", "# Bad")
-	gitCmd(t, dir, "add", "nb/good.md", "nb/bad_perm.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "nb/good.md", "# Good")
+	testutil.WriteFile(t, dir, "nb/bad_perm.md", "# Bad")
+	testutil.GitCmd(t, dir, "add", "nb/good.md", "nb/bad_perm.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	badPath := filepath.Join(dir, "nb/bad_perm.md")
 	if err := os.Chmod(badPath, 0); err != nil {
@@ -938,9 +905,9 @@ func TestSync_NotebookExists_UsesExisting(t *testing.T) {
 	dir := setupGitDir(t)
 	defer os.RemoveAll(dir)
 
-	writeGitFile(t, dir, "existing_nb/file.md", "# Content")
-	gitCmd(t, dir, "add", "existing_nb/file.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "existing_nb/file.md", "# Content")
+	testutil.GitCmd(t, dir, "add", "existing_nb/file.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h := &mockSiYuanHandler{
 		t:         t,
@@ -1985,10 +1952,10 @@ func TestPrune_DeletedFileRemovesSiYuanDocument(t *testing.T) {
 	dir := setupGitDir(t)
 	defer os.RemoveAll(dir)
 
-	writeGitFile(t, dir, "notes/keep.md", "# Keep")
-	writeGitFile(t, dir, "notes/delete.md", "# Delete")
-	gitCmd(t, dir, "add", "notes/keep.md", "notes/delete.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "notes/keep.md", "# Keep")
+	testutil.WriteFile(t, dir, "notes/delete.md", "# Delete")
+	testutil.GitCmd(t, dir, "add", "notes/keep.md", "notes/delete.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -2004,8 +1971,8 @@ func TestPrune_DeletedFileRemovesSiYuanDocument(t *testing.T) {
 	}
 
 	os.Remove(filepath.Join(dir, "notes/delete.md"))
-	gitCmd(t, dir, "rm", "notes/delete.md")
-	gitCmd(t, dir, "commit", "-m", "delete")
+	testutil.GitCmd(t, dir, "rm", "notes/delete.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "delete")
 
 	scanner, err := git.NewGitScanner(dir)
 	if err != nil {
@@ -2048,9 +2015,9 @@ func TestPrune_StateEntryRemovedAfterDeletion(t *testing.T) {
 	dir := setupGitDir(t)
 	defer os.RemoveAll(dir)
 
-	writeGitFile(t, dir, "wiki/doc.md", "# Wiki Doc")
-	gitCmd(t, dir, "add", "wiki/doc.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "wiki/doc.md", "# Wiki Doc")
+	testutil.GitCmd(t, dir, "add", "wiki/doc.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	_, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -2068,8 +2035,8 @@ func TestPrune_StateEntryRemovedAfterDeletion(t *testing.T) {
 	}
 
 	os.Remove(filepath.Join(dir, "wiki/doc.md"))
-	gitCmd(t, dir, "rm", "wiki/doc.md")
-	gitCmd(t, dir, "commit", "-m", "delete")
+	testutil.GitCmd(t, dir, "rm", "wiki/doc.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "delete")
 
 	scanner, _ := git.NewGitScanner(dir)
 	tracker, _ := state.NewStateTracker(dir)
@@ -2104,11 +2071,11 @@ func TestPrune_MultipleDeletedFiles(t *testing.T) {
 	dir := setupGitDir(t)
 	defer os.RemoveAll(dir)
 
-	writeGitFile(t, dir, "notes/a.md", "# A")
-	writeGitFile(t, dir, "notes/b.md", "# B")
-	writeGitFile(t, dir, "notes/c.md", "# C")
-	gitCmd(t, dir, "add", "notes/a.md", "notes/b.md", "notes/c.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "notes/a.md", "# A")
+	testutil.WriteFile(t, dir, "notes/b.md", "# B")
+	testutil.WriteFile(t, dir, "notes/c.md", "# C")
+	testutil.GitCmd(t, dir, "add", "notes/a.md", "notes/b.md", "notes/c.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -2125,8 +2092,8 @@ func TestPrune_MultipleDeletedFiles(t *testing.T) {
 
 	os.Remove(filepath.Join(dir, "notes/a.md"))
 	os.Remove(filepath.Join(dir, "notes/c.md"))
-	gitCmd(t, dir, "rm", "notes/a.md", "notes/c.md")
-	gitCmd(t, dir, "commit", "-m", "delete a and c")
+	testutil.GitCmd(t, dir, "rm", "notes/a.md", "notes/c.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "delete a and c")
 
 	scanner, _ := git.NewGitScanner(dir)
 	tracker, _ := state.NewStateTracker(dir)
@@ -2162,10 +2129,10 @@ func TestPrune_APIErrorDoesNotAbortPruning(t *testing.T) {
 	dir := setupGitDir(t)
 	defer os.RemoveAll(dir)
 
-	writeGitFile(t, dir, "notes/good.md", "# Good")
-	writeGitFile(t, dir, "notes/bad.md", "# Bad")
-	gitCmd(t, dir, "add", "notes/good.md", "notes/bad.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "notes/good.md", "# Good")
+	testutil.WriteFile(t, dir, "notes/bad.md", "# Bad")
+	testutil.GitCmd(t, dir, "add", "notes/good.md", "notes/bad.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	_, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -2188,8 +2155,8 @@ func TestPrune_APIErrorDoesNotAbortPruning(t *testing.T) {
 
 	os.Remove(filepath.Join(dir, "notes/good.md"))
 	os.Remove(filepath.Join(dir, "notes/bad.md"))
-	gitCmd(t, dir, "rm", "notes/good.md", "notes/bad.md")
-	gitCmd(t, dir, "commit", "-m", "delete all")
+	testutil.GitCmd(t, dir, "rm", "notes/good.md", "notes/bad.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "delete all")
 
 	failCount := 0
 	failServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2252,9 +2219,9 @@ func TestPrune_DependencyConflict_SkipsAndReports(t *testing.T) {
 	dir := setupGitDir(t)
 	defer os.RemoveAll(dir)
 
-	writeGitFile(t, dir, "notes/parent.md", "# Parent")
-	gitCmd(t, dir, "add", "notes/parent.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "notes/parent.md", "# Parent")
+	testutil.GitCmd(t, dir, "add", "notes/parent.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -2288,8 +2255,8 @@ func TestPrune_DependencyConflict_SkipsAndReports(t *testing.T) {
 	}
 
 	os.Remove(filepath.Join(dir, "notes/parent.md"))
-	gitCmd(t, dir, "rm", "notes/parent.md")
-	gitCmd(t, dir, "commit", "-m", "delete parent")
+	testutil.GitCmd(t, dir, "rm", "notes/parent.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "delete parent")
 
 	scanner, _ := git.NewGitScanner(dir)
 	tracker, _ := state.NewStateTracker(dir)
@@ -2330,9 +2297,9 @@ func TestPrune_IntegratedInSyncFlow(t *testing.T) {
 	dir := setupGitDir(t)
 	defer os.RemoveAll(dir)
 
-	writeGitFile(t, dir, "wiki/doc.md", "# Doc")
-	gitCmd(t, dir, "add", "wiki/doc.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "wiki/doc.md", "# Doc")
+	testutil.GitCmd(t, dir, "add", "wiki/doc.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -2350,11 +2317,11 @@ func TestPrune_IntegratedInSyncFlow(t *testing.T) {
 		t.Errorf("expected 0 pruned on first sync, got %d", len(report.Pruned))
 	}
 
-	writeGitFile(t, dir, "wiki/new.md", "# New")
+	testutil.WriteFile(t, dir, "wiki/new.md", "# New")
 	os.Remove(filepath.Join(dir, "wiki/doc.md"))
-	gitCmd(t, dir, "add", "wiki/new.md")
-	gitCmd(t, dir, "rm", "wiki/doc.md")
-	gitCmd(t, dir, "commit", "-m", "add new, remove doc")
+	testutil.GitCmd(t, dir, "add", "wiki/new.md")
+	testutil.GitCmd(t, dir, "rm", "wiki/doc.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "add new, remove doc")
 
 	scanner, _ := git.NewGitScanner(dir)
 	tracker, _ := state.NewStateTracker(dir)
@@ -2396,9 +2363,9 @@ func TestPrune_NoDeletedFiles_EmptyReport(t *testing.T) {
 	dir := setupGitDir(t)
 	defer os.RemoveAll(dir)
 
-	writeGitFile(t, dir, "notes/a.md", "# A")
-	gitCmd(t, dir, "add", "notes/a.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "notes/a.md", "# A")
+	testutil.GitCmd(t, dir, "add", "notes/a.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -2442,9 +2409,9 @@ func TestSync_FrontmatterStrippedTitleAndTagsApplied(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	content := "---\ntitle: My Real Title\ntags: [alpha, beta]\n---\n# Heading\n\nBody text\n"
-	writeGitFile(t, dir, "notebook/sub/file.md", content)
-	gitCmd(t, dir, "add", "notebook/sub/file.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "notebook/sub/file.md", content)
+	testutil.GitCmd(t, dir, "add", "notebook/sub/file.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -2510,9 +2477,9 @@ func TestSync_NoFrontmatterTitle_DoesNotRename(t *testing.T) {
 
 	// No frontmatter at all — the common case exercised by the e2e suite.
 	content := "# Content\n\nplain note, no frontmatter\n"
-	writeGitFile(t, dir, "notebook/sub/My Doc.md", content)
-	gitCmd(t, dir, "add", "notebook/sub/My Doc.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "notebook/sub/My Doc.md", content)
+	testutil.GitCmd(t, dir, "add", "notebook/sub/My Doc.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -2549,9 +2516,9 @@ func TestSync_MalformedFrontmatter_DegradesGracefully(t *testing.T) {
 
 	// Unterminated/invalid YAML inside a frontmatter block.
 	content := "---\ntitle: [unclosed\n  : : bad\n---\n# Body\n\nstuff\n"
-	writeGitFile(t, dir, "notebook/bad.md", content)
-	gitCmd(t, dir, "add", "notebook/bad.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "notebook/bad.md", content)
+	testutil.GitCmd(t, dir, "add", "notebook/bad.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -2595,9 +2562,9 @@ func TestSync_RenameDocByIDError_NonFatal(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	content := "---\ntitle: T\n---\n# Body\n"
-	writeGitFile(t, dir, "notebook/x.md", content)
-	gitCmd(t, dir, "add", "notebook/x.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "notebook/x.md", content)
+	testutil.GitCmd(t, dir, "add", "notebook/x.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -2636,9 +2603,9 @@ func TestSync_SetBlockAttrsError_NonFatal(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	content := "---\ntitle: T\ntags: [alpha, beta]\n---\n# Body\n"
-	writeGitFile(t, dir, "notebook/y.md", content)
-	gitCmd(t, dir, "add", "notebook/y.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "notebook/y.md", content)
+	testutil.GitCmd(t, dir, "add", "notebook/y.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -2683,9 +2650,9 @@ func TestSync_TagAttrs_ExactSetFromFrontmatterAndInline(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	content := "---\ntitle: Doc T\ntags: [alpha, beta]\n---\n# Heading\n\nBody with an #gamma inline tag.\n"
-	writeGitFile(t, dir, "notebook/tagged.md", content)
-	gitCmd(t, dir, "add", "notebook/tagged.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "notebook/tagged.md", content)
+	testutil.GitCmd(t, dir, "add", "notebook/tagged.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -2741,9 +2708,9 @@ func TestSync_UpdatePath_SetsTitleFromFrontmatter(t *testing.T) {
 	dir := setupGitDir(t)
 	defer os.RemoveAll(dir)
 
-	writeGitFile(t, dir, "notes/doc.md", "---\ntitle: First Title\n---\n# Original\n")
-	gitCmd(t, dir, "add", "notes/doc.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "notes/doc.md", "---\ntitle: First Title\n---\n# Original\n")
+	testutil.GitCmd(t, dir, "add", "notes/doc.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -2758,9 +2725,9 @@ func TestSync_UpdatePath_SetsTitleFromFrontmatter(t *testing.T) {
 	}
 
 	time.Sleep(100 * time.Millisecond)
-	writeGitFile(t, dir, "notes/doc.md", "---\ntitle: Second Title\n---\n# Modified\n")
-	gitCmd(t, dir, "add", "notes/doc.md")
-	gitCmd(t, dir, "commit", "-m", "modified")
+	testutil.WriteFile(t, dir, "notes/doc.md", "---\ntitle: Second Title\n---\n# Modified\n")
+	testutil.GitCmd(t, dir, "add", "notes/doc.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "modified")
 
 	scanner, _ := git.NewGitScanner(dir)
 	tracker, _ := state.NewStateTracker(dir)
@@ -2820,11 +2787,11 @@ func TestSync_SchemaGate_AbortsViolatingFile_BatchContinues(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	// a.md opts into the ontology with an out-of-enum intent ("braindump").
-	writeGitFile(t, dir, "wiki/a.md", "---\ndomain: devops\nintent: braindump\n---\n# Bad\n")
+	testutil.WriteFile(t, dir, "wiki/a.md", "---\ndomain: devops\nintent: braindump\n---\n# Bad\n")
 	// b.md opts in with a fully valid (domain, intent) pair.
-	writeGitFile(t, dir, "wiki/b.md", "---\ndomain: devops\nintent: sop\n---\n# Good\n")
-	gitCmd(t, dir, "add", "wiki/a.md", "wiki/b.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "wiki/b.md", "---\ndomain: devops\nintent: sop\n---\n# Good\n")
+	testutil.GitCmd(t, dir, "add", "wiki/a.md", "wiki/b.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -2906,9 +2873,9 @@ func TestSync_SchemaGate_MultipleViolationsProduceMultipleErrors(t *testing.T) {
 	dir := setupGitDir(t)
 	defer os.RemoveAll(dir)
 
-	writeGitFile(t, dir, "wiki/c.md", "---\ndomain: bogus\nintent: braindump\n---\n# Bad\n")
-	gitCmd(t, dir, "add", "wiki/c.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "wiki/c.md", "---\ndomain: bogus\nintent: braindump\n---\n# Bad\n")
+	testutil.GitCmd(t, dir, "add", "wiki/c.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -2969,9 +2936,9 @@ func TestSync_SchemaGate_NonOptInFile_BypassesGate(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	// Frontmatter with neither `domain:` nor `intent:` → not opted in.
-	writeGitFile(t, dir, "wiki/legacy.md", "---\ntitle: Foo\n---\n# Body\n")
-	gitCmd(t, dir, "add", "wiki/legacy.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "wiki/legacy.md", "---\ntitle: Foo\n---\n# Body\n")
+	testutil.GitCmd(t, dir, "add", "wiki/legacy.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -3007,20 +2974,6 @@ func TestSync_SchemaGate_NonOptInFile_BypassesGate(t *testing.T) {
 // gitLogGrep runs `git log --grep=<pattern>` in dir and returns the matching
 // subject lines (newline-separated, trailing newline trimmed). Used by the
 // 3.2 routing tests to count `ontology-route:` rename commits.
-func gitLogGrep(t *testing.T, dir, pattern string) []string {
-	t.Helper()
-	cmd := exec.Command("git", "log", "--grep="+pattern, "--pretty=%s")
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git log --grep=%q failed: %v\n%s", pattern, err, out)
-	}
-	trimmed := strings.TrimSpace(string(out))
-	if trimmed == "" {
-		return nil
-	}
-	return strings.Split(trimmed, "\n")
-}
 
 // Req 3.2 + 3.3 + design "sync/engine (extended) Step 2 (Route)":
 // a file at a non-canonical path that declares a valid domain must be
@@ -3037,9 +2990,9 @@ func TestSync_OntologyRouting_MovesAndCommits(t *testing.T) {
 	// the gate passes and the router emits RouteMove to
 	// `Sysadmin & DevOps/foo.md`.
 	content := "---\ndomain: devops\nintent: sop\n---\n# Foo\n\nBody.\n"
-	writeGitFile(t, dir, "wiki/misc/foo.md", content)
-	gitCmd(t, dir, "add", "wiki/misc/foo.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "wiki/misc/foo.md", content)
+	testutil.GitCmd(t, dir, "add", "wiki/misc/foo.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -3066,7 +3019,7 @@ func TestSync_OntologyRouting_MovesAndCommits(t *testing.T) {
 	}
 
 	// Exactly one `ontology-route:` commit exists in the repo (Req 3.3).
-	commits := gitLogGrep(t, dir, "ontology-route:")
+	commits := testutil.GitLogGrep(t, dir, "ontology-route:")
 	if len(commits) != 1 {
 		t.Fatalf("Req 3.3: expected exactly 1 ontology-route commit, got %d: %v", len(commits), commits)
 	}
@@ -3107,9 +3060,9 @@ func TestSync_OntologyRouting_NoopWhenAlreadyCanonical(t *testing.T) {
 
 	canonical := "Sysadmin & DevOps/foo.md"
 	content := "---\ndomain: devops\nintent: sop\n---\n# Foo\n"
-	writeGitFile(t, dir, canonical, content)
-	gitCmd(t, dir, "add", canonical)
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, canonical, content)
+	testutil.GitCmd(t, dir, "add", canonical)
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -3126,7 +3079,7 @@ func TestSync_OntologyRouting_NoopWhenAlreadyCanonical(t *testing.T) {
 	}
 
 	// No ontology-route commits whatsoever.
-	commits := gitLogGrep(t, dir, "ontology-route:")
+	commits := testutil.GitLogGrep(t, dir, "ontology-route:")
 	if len(commits) != 0 {
 		t.Errorf("Req 3.6: expected 0 ontology-route commits, got %d: %v", len(commits), commits)
 	}
@@ -3151,9 +3104,9 @@ func TestSync_OntologyRouting_AssetWarning(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	content := "---\ndomain: forensics\nintent: sop\n---\n# Case\n\n![diagram](assets/case-1.png)\n"
-	writeGitFile(t, dir, "wiki/misc/case.md", content)
-	gitCmd(t, dir, "add", "wiki/misc/case.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "wiki/misc/case.md", content)
+	testutil.GitCmd(t, dir, "add", "wiki/misc/case.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	_, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -3205,9 +3158,9 @@ func TestSync_OntologyRouting_LegacyFileNoRoute(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	content := "---\ntitle: Old Note\n---\n# Body\n"
-	writeGitFile(t, dir, "wiki/misc/legacy.md", content)
-	gitCmd(t, dir, "add", "wiki/misc/legacy.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "wiki/misc/legacy.md", content)
+	testutil.GitCmd(t, dir, "add", "wiki/misc/legacy.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -3223,7 +3176,7 @@ func TestSync_OntologyRouting_LegacyFileNoRoute(t *testing.T) {
 		t.Fatalf("legacy bypass: expected Created=[wiki/misc/legacy.md], got %v (errors=%v)",
 			report.Created, report.Errors)
 	}
-	commits := gitLogGrep(t, dir, "ontology-route:")
+	commits := testutil.GitLogGrep(t, dir, "ontology-route:")
 	if len(commits) != 0 {
 		t.Errorf("legacy bypass: expected 0 ontology-route commits, got %d: %v", len(commits), commits)
 	}
@@ -3244,9 +3197,9 @@ func TestSync_OntologyRouting_StateCollision(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	content := "---\ndomain: devops\nintent: sop\n---\n# Foo\n"
-	writeGitFile(t, dir, "wiki/misc/foo.md", content)
-	gitCmd(t, dir, "add", "wiki/misc/foo.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "wiki/misc/foo.md", content)
+	testutil.GitCmd(t, dir, "add", "wiki/misc/foo.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	// Pre-seed state with entries at BOTH the source and the canonical
 	// target, pointing at DIFFERENT SiYuanIDs. The source entry's mtime
@@ -3351,9 +3304,9 @@ func TestSync_RouteAndSync_HappyPath(t *testing.T) {
 	// Non-canonical wiki/misc/ path with a (devops, sop) ontology and two
 	// frontmatter tags. The router will route to Sysadmin & DevOps/foo.md.
 	content := "---\ndomain: devops\nintent: sop\ntags: [a, b]\n---\n# Foo\n\nBody.\n"
-	writeGitFile(t, dir, "wiki/misc/foo.md", content)
-	gitCmd(t, dir, "add", "wiki/misc/foo.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "wiki/misc/foo.md", content)
+	testutil.GitCmd(t, dir, "add", "wiki/misc/foo.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -3427,9 +3380,9 @@ func TestSync_RouteAndSync_SchemaViolationReturnsError(t *testing.T) {
 
 	// Out-of-enum intent (`braindump`): gate aborts the file before upload.
 	content := "---\ndomain: devops\nintent: braindump\n---\n# Bad\n"
-	writeGitFile(t, dir, "wiki/misc/bad.md", content)
-	gitCmd(t, dir, "add", "wiki/misc/bad.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "wiki/misc/bad.md", content)
+	testutil.GitCmd(t, dir, "add", "wiki/misc/bad.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -3499,9 +3452,9 @@ func TestSync_RouteAndSync_TitleFailure_StillInState(t *testing.T) {
 	// title-failure path, not routing.
 	canonical := "Sysadmin & DevOps/x.md"
 	content := "---\ndomain: devops\nintent: sop\ntitle: My Title\n---\n# Body\n"
-	writeGitFile(t, dir, canonical, content)
-	gitCmd(t, dir, "add", canonical)
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, canonical, content)
+	testutil.GitCmd(t, dir, "add", canonical)
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -3546,9 +3499,9 @@ func TestSync_RouteAndSync_FileNotFound(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	// Create the git repo but never write the target file.
-	writeGitFile(t, dir, "placeholder.md", "# placeholder\n")
-	gitCmd(t, dir, "add", "placeholder.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "placeholder.md", "# placeholder\n")
+	testutil.GitCmd(t, dir, "add", "placeholder.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -3640,9 +3593,9 @@ func TestOntologyGate_Sync_AppliesCustomDomainIntentAttrs(t *testing.T) {
 	// attrs payload (no routing concerns; that is covered by 3.2 tests).
 	canonical := "Sysadmin & DevOps/attrs.md"
 	content := "---\ndomain: devops\nintent: sop\ntags: [a, b]\n---\n# Body\n"
-	writeGitFile(t, dir, canonical, content)
-	gitCmd(t, dir, "add", canonical)
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, canonical, content)
+	testutil.GitCmd(t, dir, "add", canonical)
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	h, server := newMockSiYuanServer(t)
 	defer server.Close()
@@ -3722,266 +3675,244 @@ func TestOntologyGate_Sync_AppliesCustomDomainIntentAttrs(t *testing.T) {
 //	  Mirrors TestSync_OntologyRouting_StateCollision — a state.Move
 //	  collision surfaces as a per-file Errors entry (not a panic); the file
 //	  stays on disk at the source; no SiYuan create issued.
-func TestOntologyGate_RoutingFlow_FourScenarios(t *testing.T) {
-	t.Run("schema_violation_aborts_batch_continues", func(t *testing.T) {
-		dir := setupGitDir(t)
-		defer os.RemoveAll(dir)
+func TestOntologyGate_SchemaViolationAbortsBatchContinues(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
 
-		writeGitFile(t, dir, "wiki/a.md", "---\ndomain: devops\nintent: braindump\n---\n# Bad\n")
-		writeGitFile(t, dir, "wiki/b.md", "---\ndomain: devops\nintent: sop\n---\n# Good\n")
-		gitCmd(t, dir, "add", "wiki/a.md", "wiki/b.md")
-		gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "wiki/a.md", "---\ndomain: devops\nintent: braindump\n---\n# Bad\n")
+	testutil.WriteFile(t, dir, "wiki/b.md", "---\ndomain: devops\nintent: sop\n---\n# Good\n")
+	testutil.GitCmd(t, dir, "add", "wiki/a.md", "wiki/b.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
-		h, server := newMockSiYuanServer(t)
-		defer server.Close()
+	h, server := newMockSiYuanServer(t)
+	defer server.Close()
 
-		engine, _ := newSyncEngine(t, server, dir, false)
+	engine, _ := newSyncEngine(t, server, dir, false)
 
-		report, err := engine.Sync(context.Background())
-		if err != nil {
-			t.Fatalf("Sync failed: %v", err)
-		}
+	report, err := engine.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("Sync failed: %v", err)
+	}
 
-		// The valid sibling syncs (under its routed canonical path).
-		canonicalB := "Sysadmin & DevOps/b.md"
-		if len(report.Created) != 1 || report.Created[0] != canonicalB {
-			t.Fatalf("expected Created=[%q] (batch continues past gate), got %v (errors=%v)",
-				canonicalB, report.Created, report.Errors)
+	canonicalB := "Sysadmin & DevOps/b.md"
+	if len(report.Created) != 1 || report.Created[0] != canonicalB {
+		t.Fatalf("expected Created=[%q] (batch continues past gate), got %v (errors=%v)",
+			canonicalB, report.Created, report.Errors)
+	}
+	for _, p := range report.Created {
+		if p == "wiki/a.md" {
+			t.Errorf("schema-violating file must not be Created, got %v", report.Created)
 		}
-		// The violating sibling is never created or updated.
-		for _, p := range report.Created {
-			if p == "wiki/a.md" {
-				t.Errorf("schema-violating file must not be Created, got %v", report.Created)
-			}
+	}
+	var gateErrs []types.SyncError
+	for _, e := range report.Errors {
+		if e.File == "wiki/a.md" {
+			gateErrs = append(gateErrs, e)
 		}
-		// The gate emits a JSON-decodable SchemaViolation for the violating file.
-		var gateErrs []types.SyncError
-		for _, e := range report.Errors {
-			if e.File == "wiki/a.md" {
-				gateErrs = append(gateErrs, e)
-			}
-		}
-		if len(gateErrs) != 1 {
-			t.Fatalf("expected exactly 1 gate Errors entry for wiki/a.md, got %d (errors=%v)",
-				len(gateErrs), report.Errors)
-		}
-		var sv schemaViolationJSON
-		if err := json.Unmarshal([]byte(gateErrs[0].Message), &sv); err != nil {
-			t.Fatalf("expected JSON-decodable SchemaViolation, got %q (err=%v)",
-				gateErrs[0].Message, err)
-		}
-		if sv.Key != "intent" || sv.OffendingValue != "braindump" {
-			t.Errorf("unexpected violation payload: %+v", sv)
-		}
-		// The gate fires BEFORE any SiYuan write for the violating file.
-		if len(h.userCreatedDocs()) != 1 {
-			t.Fatalf("expected exactly 1 createDocWithMd (for the valid sibling), got %d: %+v",
-				len(h.userCreatedDocs()), h.createdDocs)
-		}
-		if h.userCreatedDocs()[0].HPath != "/b.md" {
-			t.Errorf("expected createDocWithMd at /b.md, got %q", h.userCreatedDocs()[0].HPath)
-		}
+	}
+	if len(gateErrs) != 1 {
+		t.Fatalf("expected exactly 1 gate Errors entry for wiki/a.md, got %d (errors=%v)",
+			len(gateErrs), report.Errors)
+	}
+	var sv schemaViolationJSON
+	if err := json.Unmarshal([]byte(gateErrs[0].Message), &sv); err != nil {
+		t.Fatalf("expected JSON-decodable SchemaViolation, got %q (err=%v)",
+			gateErrs[0].Message, err)
+	}
+	if sv.Key != "intent" || sv.OffendingValue != "braindump" {
+		t.Errorf("unexpected violation payload: %+v", sv)
+	}
+	if len(h.userCreatedDocs()) != 1 {
+		t.Fatalf("expected exactly 1 createDocWithMd (for the valid sibling), got %d: %+v",
+			len(h.userCreatedDocs()), h.createdDocs)
+	}
+	if h.userCreatedDocs()[0].HPath != "/b.md" {
+		t.Errorf("expected createDocWithMd at /b.md, got %q", h.userCreatedDocs()[0].HPath)
+	}
+}
+
+func TestOntologyGate_ValidFileRoutedWithStateAndCommit(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	content := "---\ndomain: devops\nintent: sop\n---\n# Foo\n"
+	testutil.WriteFile(t, dir, "wiki/misc/foo.md", content)
+	testutil.GitCmd(t, dir, "add", "wiki/misc/foo.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
+
+	h, server := newMockSiYuanServer(t)
+	defer server.Close()
+
+	engine, _ := newSyncEngine(t, server, dir, false)
+
+	report, err := engine.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("Sync failed: %v", err)
+	}
+
+	canonical := "Sysadmin & DevOps/foo.md"
+	if len(report.Created) != 1 || report.Created[0] != canonical {
+		t.Fatalf("expected Created=[%q], got %v (errors=%v)",
+			canonical, report.Created, report.Errors)
+	}
+
+	commits := testutil.GitLogGrep(t, dir, "ontology-route:")
+	if len(commits) != 1 {
+		t.Fatalf("expected exactly 1 ontology-route commit, got %d: %v", len(commits), commits)
+	}
+	wantSubject := "ontology-route: wiki/misc/foo.md -> " + canonical
+	if commits[0] != wantSubject {
+		t.Errorf("commit subject mismatch.\n got:  %q\n want: %q", commits[0], wantSubject)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, canonical)); err != nil {
+		t.Errorf("expected file at canonical path %q, stat err=%v", canonical, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "wiki/misc/foo.md")); !os.IsNotExist(err) {
+		t.Errorf("expected old path gone, stat err=%v", err)
+	}
+
+	allState := engine.state.All()
+	entry, ok := allState[canonical]
+	if !ok {
+		t.Fatalf("expected state entry at %q, got %v", canonical, allState)
+	}
+	if entry.SiYuanID == "" {
+		t.Errorf("expected non-empty SiYuanID at new path, got %+v", entry)
+	}
+	if _, gone := allState["wiki/misc/foo.md"]; gone {
+		t.Errorf("expected old state key gone, got entries=%v", allState)
+	}
+
+	if len(h.userCreatedDocs()) != 1 {
+		t.Fatalf("expected 1 createDocWithMd, got %d", len(h.userCreatedDocs()))
+	}
+	if got := h.userCreatedDocs()[0].HPath; got != "/foo.md" {
+		t.Errorf("expected create hpath /foo.md, got %q", got)
+	}
+}
+
+func TestOntologyGate_CanonicalPathNoop(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	canonical := "Sysadmin & DevOps/foo.md"
+	content := "---\ndomain: devops\nintent: sop\n---\n# Foo\n"
+	testutil.WriteFile(t, dir, canonical, content)
+	testutil.GitCmd(t, dir, "add", canonical)
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
+
+	h, server := newMockSiYuanServer(t)
+	defer server.Close()
+
+	engine, _ := newSyncEngine(t, server, dir, false)
+
+	report, err := engine.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("Sync failed: %v", err)
+	}
+
+	if len(report.Created) != 1 || report.Created[0] != canonical {
+		t.Fatalf("expected Created=[%q], got %v (errors=%v)",
+			canonical, report.Created, report.Errors)
+	}
+
+	commits := testutil.GitLogGrep(t, dir, "ontology-route:")
+	if len(commits) != 0 {
+		t.Errorf("expected 0 ontology-route commits, got %d: %v", len(commits), commits)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, canonical)); err != nil {
+		t.Errorf("expected file still at %q, stat err=%v", canonical, err)
+	}
+
+	if len(h.userCreatedDocs()) != 1 {
+		t.Fatalf("expected 1 createDocWithMd, got %d", len(h.userCreatedDocs()))
+	}
+}
+
+func TestOntologyGate_StateCollisionPerFileError(t *testing.T) {
+	dir := setupGitDir(t)
+	defer os.RemoveAll(dir)
+
+	content := "---\ndomain: devops\nintent: sop\n---\n# Foo\n"
+	testutil.WriteFile(t, dir, "wiki/misc/foo.md", content)
+	testutil.GitCmd(t, dir, "add", "wiki/misc/foo.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
+
+	tr, err := state.NewStateTracker(dir)
+	if err != nil {
+		t.Fatalf("NewStateTracker: %v", err)
+	}
+	canonical := "Sysadmin & DevOps/foo.md"
+	tr.Put(types.SyncEntry{
+		LocalPath:  "wiki/misc/foo.md",
+		SiYuanID:   "src-doc-id",
+		NotebookID: "nb-wiki",
+		SyncedAt:   time.Now().Add(-1 * time.Hour),
 	})
-
-	t.Run("valid_file_routed_with_state_and_commit", func(t *testing.T) {
-		dir := setupGitDir(t)
-		defer os.RemoveAll(dir)
-
-		content := "---\ndomain: devops\nintent: sop\n---\n# Foo\n"
-		writeGitFile(t, dir, "wiki/misc/foo.md", content)
-		gitCmd(t, dir, "add", "wiki/misc/foo.md")
-		gitCmd(t, dir, "commit", "-m", "initial")
-
-		h, server := newMockSiYuanServer(t)
-		defer server.Close()
-
-		engine, _ := newSyncEngine(t, server, dir, false)
-
-		report, err := engine.Sync(context.Background())
-		if err != nil {
-			t.Fatalf("Sync failed: %v", err)
-		}
-
-		canonical := "Sysadmin & DevOps/foo.md"
-		if len(report.Created) != 1 || report.Created[0] != canonical {
-			t.Fatalf("expected Created=[%q], got %v (errors=%v)",
-				canonical, report.Created, report.Errors)
-		}
-
-		// Exactly one ontology-route: commit recorded in the repo.
-		commits := gitLogGrep(t, dir, "ontology-route:")
-		if len(commits) != 1 {
-			t.Fatalf("expected exactly 1 ontology-route commit, got %d: %v", len(commits), commits)
-		}
-		wantSubject := "ontology-route: wiki/misc/foo.md -> " + canonical
-		if commits[0] != wantSubject {
-			t.Errorf("commit subject mismatch.\n got:  %q\n want: %q", commits[0], wantSubject)
-		}
-
-		// Filesystem reflects the move.
-		if _, err := os.Stat(filepath.Join(dir, canonical)); err != nil {
-			t.Errorf("expected file at canonical path %q, stat err=%v", canonical, err)
-		}
-		if _, err := os.Stat(filepath.Join(dir, "wiki/misc/foo.md")); !os.IsNotExist(err) {
-			t.Errorf("expected old path gone, stat err=%v", err)
-		}
-
-		// State tracker reflects the new path.
-		allState := engine.state.All()
-		entry, ok := allState[canonical]
-		if !ok {
-			t.Fatalf("expected state entry at %q, got %v", canonical, allState)
-		}
-		if entry.SiYuanID == "" {
-			t.Errorf("expected non-empty SiYuanID at new path, got %+v", entry)
-		}
-		if _, gone := allState["wiki/misc/foo.md"]; gone {
-			t.Errorf("expected old state key gone, got entries=%v", allState)
-		}
-
-		// SiYuan create call at the routed hpath.
-		if len(h.userCreatedDocs()) != 1 {
-			t.Fatalf("expected 1 createDocWithMd, got %d", len(h.userCreatedDocs()))
-		}
-		if got := h.userCreatedDocs()[0].HPath; got != "/foo.md" {
-			t.Errorf("expected create hpath /foo.md, got %q", got)
-		}
+	tr.Put(types.SyncEntry{
+		LocalPath:  canonical,
+		SiYuanID:   "different-target-doc-id",
+		NotebookID: "nb-wiki",
+		SyncedAt:   time.Now().Add(-1 * time.Hour),
 	})
+	if err := tr.Save(); err != nil {
+		t.Fatal(err)
+	}
 
-	t.Run("canonical_path_noop", func(t *testing.T) {
-		dir := setupGitDir(t)
-		defer os.RemoveAll(dir)
+	h, server := newMockSiYuanServer(t)
+	defer server.Close()
 
-		canonical := "Sysadmin & DevOps/foo.md"
-		content := "---\ndomain: devops\nintent: sop\n---\n# Foo\n"
-		writeGitFile(t, dir, canonical, content)
-		gitCmd(t, dir, "add", canonical)
-		gitCmd(t, dir, "commit", "-m", "initial")
+	scanner, err := git.NewGitScanner(dir)
+	if err != nil {
+		t.Fatalf("NewGitScanner: %v", err)
+	}
+	tracker, err := state.NewStateTracker(dir)
+	if err != nil {
+		t.Fatalf("NewStateTracker: %v", err)
+	}
+	ce := compliance.NewComplianceEngine(false)
+	client := siyuan.NewClient(server.URL, "test-token")
+	engine := NewSyncEngine(client, scanner, tracker, ce)
 
-		h, server := newMockSiYuanServer(t)
-		defer server.Close()
+	report, err := engine.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("Sync failed: %v", err)
+	}
 
-		engine, _ := newSyncEngine(t, server, dir, false)
-
-		report, err := engine.Sync(context.Background())
-		if err != nil {
-			t.Fatalf("Sync failed: %v", err)
+	for _, p := range report.Created {
+		if p == "wiki/misc/foo.md" || p == canonical {
+			t.Errorf("collision: file must not be Created, got %v", report.Created)
 		}
+	}
+	for _, p := range report.Updated {
+		if p == "wiki/misc/foo.md" || p == canonical {
+			t.Errorf("collision: file must not be Updated, got %v", report.Updated)
+		}
+	}
 
-		if len(report.Created) != 1 || report.Created[0] != canonical {
-			t.Fatalf("expected Created=[%q], got %v (errors=%v)",
-				canonical, report.Created, report.Errors)
+	found := false
+	for _, e := range report.Errors {
+		if e.File == "wiki/misc/foo.md" && strings.Contains(e.Message, "state collision") {
+			found = true
+			break
 		}
+	}
+	if !found {
+		t.Errorf("collision: expected a state-collision error for wiki/misc/foo.md, got errors=%v",
+			report.Errors)
+	}
 
-		// No ontology-route: commit was created.
-		commits := gitLogGrep(t, dir, "ontology-route:")
-		if len(commits) != 0 {
-			t.Errorf("expected 0 ontology-route commits, got %d: %v", len(commits), commits)
+	for _, d := range h.createdDocs {
+		if d.HPath == "/misc/foo.md" || d.HPath == "/foo.md" {
+			t.Errorf("collision: must not call createDocWithMd, got %+v", d)
 		}
+	}
 
-		// File still at the original (canonical) path.
-		if _, err := os.Stat(filepath.Join(dir, canonical)); err != nil {
-			t.Errorf("expected file still at %q, stat err=%v", canonical, err)
-		}
-
-		// Exactly one create at the canonical hpath.
-		if len(h.userCreatedDocs()) != 1 {
-			t.Fatalf("expected 1 createDocWithMd, got %d", len(h.userCreatedDocs()))
-		}
-	})
-
-	t.Run("state_collision_per_file_error", func(t *testing.T) {
-		dir := setupGitDir(t)
-		defer os.RemoveAll(dir)
-
-		content := "---\ndomain: devops\nintent: sop\n---\n# Foo\n"
-		writeGitFile(t, dir, "wiki/misc/foo.md", content)
-		gitCmd(t, dir, "add", "wiki/misc/foo.md")
-		gitCmd(t, dir, "commit", "-m", "initial")
-
-		// Pre-seed state with a DIFFERENT SiYuanID already tracked at the
-		// canonical target path; the router will probe state.Move and must
-		// surface a per-file collision error rather than panic.
-		tr, err := state.NewStateTracker(dir)
-		if err != nil {
-			t.Fatalf("NewStateTracker: %v", err)
-		}
-		canonical := "Sysadmin & DevOps/foo.md"
-		tr.Put(types.SyncEntry{
-			LocalPath:  "wiki/misc/foo.md",
-			SiYuanID:   "src-doc-id",
-			NotebookID: "nb-wiki",
-			SyncedAt:   time.Now().Add(-1 * time.Hour),
-		})
-		tr.Put(types.SyncEntry{
-			LocalPath:  canonical,
-			SiYuanID:   "different-target-doc-id",
-			NotebookID: "nb-wiki",
-			SyncedAt:   time.Now().Add(-1 * time.Hour),
-		})
-		if err := tr.Save(); err != nil {
-			t.Fatal(err)
-		}
-
-		h, server := newMockSiYuanServer(t)
-		defer server.Close()
-
-		scanner, err := git.NewGitScanner(dir)
-		if err != nil {
-			t.Fatalf("NewGitScanner: %v", err)
-		}
-		tracker, err := state.NewStateTracker(dir)
-		if err != nil {
-			t.Fatalf("NewStateTracker: %v", err)
-		}
-		ce := compliance.NewComplianceEngine(false)
-		client := siyuan.NewClient(server.URL, "test-token")
-		engine := NewSyncEngine(client, scanner, tracker, ce)
-
-		// The contract: per-file error, never a panic. If processFile started
-		// panicking on collision, this test would crash before the assertions.
-		report, err := engine.Sync(context.Background())
-		if err != nil {
-			t.Fatalf("Sync failed: %v", err)
-		}
-
-		// File not in Created or Updated.
-		for _, p := range report.Created {
-			if p == "wiki/misc/foo.md" || p == canonical {
-				t.Errorf("collision: file must not be Created, got %v", report.Created)
-			}
-		}
-		for _, p := range report.Updated {
-			if p == "wiki/misc/foo.md" || p == canonical {
-				t.Errorf("collision: file must not be Updated, got %v", report.Updated)
-			}
-		}
-
-		// A state-collision error is recorded for the file.
-		found := false
-		for _, e := range report.Errors {
-			if e.File == "wiki/misc/foo.md" && strings.Contains(e.Message, "state collision") {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("collision: expected a state-collision error for wiki/misc/foo.md, got errors=%v",
-				report.Errors)
-		}
-
-		// SiYuan never received a create call for the colliding file.
-		for _, d := range h.createdDocs {
-			if d.HPath == "/misc/foo.md" || d.HPath == "/foo.md" {
-				t.Errorf("collision: must not call createDocWithMd, got %+v", d)
-			}
-		}
-
-		// No partial move: source file still on disk at its original path.
-		if _, err := os.Stat(filepath.Join(dir, "wiki/misc/foo.md")); err != nil {
-			t.Errorf("collision: expected file still at wiki/misc/foo.md (no partial move), stat err=%v", err)
-		}
-	})
+	if _, err := os.Stat(filepath.Join(dir, "wiki/misc/foo.md")); err != nil {
+		t.Errorf("collision: expected file still at wiki/misc/foo.md (no partial move), stat err=%v", err)
+	}
 }
 
 // TestHasSchemaCategoryIssue_WarningSeverityDoesNotAbort pins the cross-package

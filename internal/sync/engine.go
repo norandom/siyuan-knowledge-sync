@@ -87,6 +87,59 @@ func (e *SyncEngine) Sync(ctx context.Context) (*types.SyncReport, error) {
 	return report, nil
 }
 
+// applyComplianceAndSchemaGate runs the compliance autofix and schema gate
+// for a single file. Returns the fixed content and compliance issues.
+// When schemaErrors is non-nil the file must be aborted before upload.
+func (e *SyncEngine) applyComplianceAndSchemaGate(filePath string, content []byte) ([]byte, []types.ComplianceIssue, []types.SyncError) {
+	fixedContent, issues, err := e.compliance.AutoFix(filePath, content)
+	if err != nil {
+		return nil, nil, []types.SyncError{{File: filePath, Message: fmt.Sprintf("compliance: %v", err)}}
+	}
+
+	if !hasSchemaCategoryIssue(issues) {
+		return fixedContent, issues, nil
+	}
+	view := parseFrontmatterView(fixedContent)
+	if view.DomainNode == nil && view.IntentNode == nil {
+		return fixedContent, issues, nil
+	}
+	violations := ontology.CheckOntologyFrontmatter(filePath, view)
+	if len(violations) == 0 {
+		return fixedContent, issues, nil
+	}
+	var schemaErrors []types.SyncError
+	for _, v := range violations {
+		payload, mErr := json.Marshal(v)
+		if mErr != nil {
+			schemaErrors = append(schemaErrors, types.SyncError{File: filePath, Message: fmt.Sprintf("schema gate: marshal violation: %v", mErr)})
+			continue
+		}
+		schemaErrors = append(schemaErrors, types.SyncError{File: filePath, Message: string(payload)})
+	}
+	return fixedContent, issues, schemaErrors
+}
+
+// prepareUploadBody chooses and decorates the body to upload. On a
+// successful frontmatter parse the stripped body is used; on failure the
+// full fixed content is used. The source-of-truth timestamp is prepended
+// as an italic line above the opening h1.
+func prepareUploadBody(fixedContent []byte, meta tags.Meta, metaErr error) string {
+	uploadBody := string(fixedContent)
+	if metaErr == nil {
+		uploadBody = string(meta.Body)
+	}
+	uploadBody = stripLeadingOriginallyWritten(uploadBody)
+	if metaErr == nil && meta.LastUpdated != "" {
+		datePart := meta.LastUpdated
+		if len(datePart) >= 10 {
+			datePart = datePart[:10]
+		}
+		uploadBody = "_Originally written: " + datePart + "_\n\n" +
+			strings.TrimLeft(uploadBody, "\n")
+	}
+	return uploadBody
+}
+
 func (e *SyncEngine) processFile(ctx context.Context, report *types.SyncReport, tf types.TrackedFile, existingSiYuanID string, isNew bool) {
 	fullPath := filepath.Join(e.repoPath, tf.Path)
 	content, err := os.ReadFile(fullPath)
@@ -97,57 +150,12 @@ func (e *SyncEngine) processFile(ctx context.Context, report *types.SyncReport, 
 		return
 	}
 
-	fixedContent, issues, err := e.compliance.AutoFix(tf.Path, content)
-	if err != nil {
-		report.Errors = append(report.Errors, types.SyncError{
-			File: tf.Path, Message: fmt.Sprintf("compliance: %v", err),
-		})
+	fixedContent, _, schemaErrors := e.applyComplianceAndSchemaGate(tf.Path, content)
+	if len(schemaErrors) > 0 {
+		report.Errors = append(report.Errors, schemaErrors...)
 		return
 	}
 
-	// Step 1 (Schema gate, Req 2.6 + 3.5 + design "sync/engine (extended)
-	// Step 1"): when the compliance audit has flagged any "schema"-category
-	// issues, we re-derive the structured []ontology.SchemaViolation directly
-	// from the (autofix-output) frontmatter and abort this file BEFORE any
-	// notebook resolve, upload, title, or attrs call. The batch continues with
-	// the next file.
-	//
-	// Opt-in via declaration: the gate fires only when the file declared at
-	// least one of `domain:` / `intent:` in its frontmatter. Files that
-	// predate the ontology (no opt-in) keep their legacy sync behavior; the
-	// `audit` subcommand still surfaces their schema issues. This preserves
-	// every existing 13.x frontmatter test and every plain-markdown test
-	// byte-equal.
-	if hasSchemaCategoryIssue(issues) {
-		view := parseFrontmatterView(fixedContent)
-		if view.DomainNode != nil || view.IntentNode != nil {
-			violations := ontology.CheckOntologyFrontmatter(tf.Path, view)
-			if len(violations) > 0 {
-				for _, v := range violations {
-					payload, mErr := json.Marshal(v)
-					if mErr != nil {
-						report.Errors = append(report.Errors, types.SyncError{
-							File:    tf.Path,
-							Message: fmt.Sprintf("schema gate: marshal violation: %v", mErr),
-						})
-						continue
-					}
-					report.Errors = append(report.Errors, types.SyncError{
-						File:    tf.Path,
-						Message: string(payload),
-					})
-				}
-				return
-			}
-		}
-	}
-
-	// Step 2 (Frontmatter + tag extraction): hoisted before notebook /
-	// hpath resolution because the routing decision (3.2) depends on
-	// meta.Domain. After a successful RouteMove the file lives at a new
-	// path, so resolveNotebook and buildHPath must run against THAT path.
-	// On a frontmatter parse failure we fall through with metaErr non-nil
-	// and the legacy 13.5 degraded-upload path takes over below.
 	meta, metaErr := e.tags.ExtractMeta(fixedContent)
 
 	// Step 2 (Route, Req 3.2/3.3/3.4/3.6 + design "sync/engine (extended)
@@ -247,37 +255,12 @@ func (e *SyncEngine) processFile(ctx context.Context, report *types.SyncReport, 
 
 	hpath := buildHPath(tf.Path)
 
-	// Step 3 / Step 6: choose the body to upload. On a successful parse we send
-	// the frontmatter-stripped body (13.1); on a parse failure we record a
-	// compliance issue and fall back to the full content (13.5).
-	uploadBody := string(fixedContent)
-	if metaErr == nil {
-		uploadBody = string(meta.Body)
-	} else {
+	if metaErr != nil {
 		report.Errors = append(report.Errors, types.SyncError{
 			File: tf.Path, Message: fmt.Sprintf("frontmatter parse: %v", metaErr),
 		})
 	}
-
-	// Make the source-of-truth original timestamp visible in the rendered
-	// post (in addition to the queryable custom-last-updated attr). Strip
-	// the time component — only the date is useful for "when was this
-	// written" context. Prepended as a small italic line above the body's
-	// opening h1 so it's immediately visible without scrolling.
-	//
-	// Idempotency: strip any leading `_Originally written:` lines that may
-	// already be in the source (migration agents historically added them)
-	// or were prepended by a prior sync run, then prepend exactly one. This
-	// is the only line the engine owns; the body never gets a second copy.
-	uploadBody = stripLeadingOriginallyWritten(uploadBody)
-	if metaErr == nil && meta.LastUpdated != "" {
-		datePart := meta.LastUpdated
-		if len(datePart) >= 10 {
-			datePart = datePart[:10] // YYYY-MM-DD
-		}
-		uploadBody = "_Originally written: " + datePart + "_\n\n" +
-			strings.TrimLeft(uploadBody, "\n")
-	}
+	uploadBody := prepareUploadBody(fixedContent, meta, metaErr)
 
 	// Step 2.5: upload each relative asset reference in the body to SiYuan
 	// and rewrite the body to point at the SiYuan-assigned `assets/<...>`

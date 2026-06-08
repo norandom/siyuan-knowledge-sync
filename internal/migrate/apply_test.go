@@ -8,10 +8,6 @@ package migrate
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,194 +21,17 @@ import (
 	"siyuan-knowledge-sync/internal/siyuan"
 	"siyuan-knowledge-sync/internal/state"
 	"siyuan-knowledge-sync/internal/sync"
-	"siyuan-knowledge-sync/internal/types"
+	"siyuan-knowledge-sync/internal/testutil"
 )
 
 // ---------------------------------------------------------------------------
 // Test fixtures: git repo + mock SiYuan server.
 // ---------------------------------------------------------------------------
 
-func gitCmd(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
-		"GIT_AUTHOR_NAME=test",
-		"GIT_AUTHOR_EMAIL=test@test.com",
-		"GIT_COMMITTER_NAME=test",
-		"GIT_COMMITTER_EMAIL=test@test.com",
-	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v failed: %s\n%s", args, err, out)
-	}
-}
-
-func writeGitFile(t *testing.T, dir, path, content string) {
-	t.Helper()
-	full := filepath.Join(dir, path)
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func setupGitRepo(t *testing.T) string {
-	t.Helper()
-	dir, err := os.MkdirTemp("", "migrate-apply-test-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	gitCmd(t, dir, "init")
-	// Make commits succeed on repos where signing or defaults would block.
-	gitCmd(t, dir, "config", "user.email", "test@test.com")
-	gitCmd(t, dir, "config", "user.name", "test")
-	gitCmd(t, dir, "config", "commit.gpgsign", "false")
-	return dir
-}
-
-// mockSiYuan is a minimal mock of the SiYuan endpoints used by RouteAndSync
-// and Apply: lsNotebooks, createNotebook, createDocWithMd, updateBlock,
-// renameDocByID, setBlockAttrs, removeDocByID.
-type mockSiYuan struct {
-	notebooks     map[string]string // name -> id
-	docs          map[string]string // docID -> hpath
-	nextNB        int
-	nextDoc       int
-	createdDocs   []createdDoc
-	updatedDocs   []string
-	removedDocs   []string
-	renamedTitle  map[string]string
-	setAttrs      map[string]map[string]string
-}
-
-type createdDoc struct {
-	NotebookID string
-	HPath      string
-	Markdown   string
-	ID         string
-}
-
-// filterUserDocs strips engine-owned intent-index docs (HPath of the form
-// `/_<intent>_index.md`) from the mock's createdDocs slice. Migration
-// assertions about V1 data-safety and per-entry upload count operate on
-// USER docs only; the index docs are derived artifacts upserted once per
-// canonical notebook by SyncEngine.ensureIntentIndices.
-func filterUserDocs(docs []createdDoc) []createdDoc {
-	out := make([]createdDoc, 0, len(docs))
-	for _, d := range docs {
-		if strings.HasPrefix(d.HPath, "/_") && strings.HasSuffix(d.HPath, "_index.md") {
-			continue
-		}
-		out = append(out, d)
-	}
-	return out
-}
-
-func newMockSiYuan(t *testing.T) (*mockSiYuan, *httptest.Server) {
-	t.Helper()
-	m := &mockSiYuan{
-		notebooks:    map[string]string{},
-		docs:         map[string]string{},
-		renamedTitle: map[string]string{},
-		setAttrs:     map[string]map[string]string{},
-	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		enc := json.NewEncoder(w)
-
-		var body map[string]any
-		if r.Body != nil {
-			_ = json.NewDecoder(r.Body).Decode(&body)
-		}
-
-		switch r.URL.Path {
-		case "/api/notebook/lsNotebooks":
-			nbs := make([]types.Notebook, 0, len(m.notebooks))
-			for name, id := range m.notebooks {
-				nbs = append(nbs, types.Notebook{ID: id, Name: name})
-			}
-			_ = enc.Encode(map[string]any{
-				"code": 0, "msg": "",
-				"data": map[string]any{"notebooks": nbs},
-			})
-
-		case "/api/notebook/createNotebook":
-			name, _ := body["name"].(string)
-			m.nextNB++
-			id := fmt.Sprintf("nb-%d", m.nextNB)
-			m.notebooks[name] = id
-			_ = enc.Encode(map[string]any{
-				"code": 0, "msg": "",
-				"data": map[string]any{"notebook": types.Notebook{ID: id, Name: name}},
-			})
-
-		case "/api/filetree/createDocWithMd":
-			nbID, _ := body["notebook"].(string)
-			hpath, _ := body["path"].(string)
-			md, _ := body["markdown"].(string)
-			m.nextDoc++
-			id := fmt.Sprintf("doc-%d", m.nextDoc)
-			m.docs[id] = hpath
-			m.createdDocs = append(m.createdDocs, createdDoc{
-				NotebookID: nbID, HPath: hpath, Markdown: md, ID: id,
-			})
-			_ = enc.Encode(map[string]any{"code": 0, "msg": "", "data": id})
-
-		case "/api/block/updateBlock":
-			id, _ := body["id"].(string)
-			m.updatedDocs = append(m.updatedDocs, id)
-			_ = enc.Encode(map[string]any{"code": 0, "msg": ""})
-
-		case "/api/filetree/removeDocByID":
-			id, _ := body["id"].(string)
-			delete(m.docs, id)
-			m.removedDocs = append(m.removedDocs, id)
-			_ = enc.Encode(map[string]any{"code": 0, "msg": ""})
-
-		case "/api/filetree/renameDocByID":
-			id, _ := body["id"].(string)
-			title, _ := body["title"].(string)
-			m.renamedTitle[id] = title
-			_ = enc.Encode(map[string]any{"code": 0, "msg": ""})
-
-		case "/api/attr/setBlockAttrs":
-			id, _ := body["id"].(string)
-			attrs := map[string]string{}
-			if raw, ok := body["attrs"].(map[string]any); ok {
-				for k, v := range raw {
-					if s, ok := v.(string); ok {
-						attrs[k] = s
-					}
-				}
-			}
-			m.setAttrs[id] = attrs
-			_ = enc.Encode(map[string]any{"code": 0, "msg": ""})
-
-		case "/api/query/sql":
-			// Indices' SQL queries return empty result sets in the mock.
-			// Tests that care about the index content can populate their
-			// own match data elsewhere; tests that don't care just need
-			// the call not to fail.
-			_ = enc.Encode(map[string]any{"code": 0, "msg": "", "data": []map[string]any{}})
-
-		default:
-			_ = enc.Encode(map[string]any{
-				"code": 1, "msg": "unknown endpoint: " + r.URL.Path,
-			})
-		}
-	}))
-	t.Cleanup(server.Close)
-	return m, server
-}
-
 // buildEngine wires up a SyncEngine backed by the mock server + temp repo.
-func buildEngine(t *testing.T, repo string, server *httptest.Server) *sync.SyncEngine {
+func buildEngine(t *testing.T, repo string, server *testutil.MockSiYuan) *sync.SyncEngine {
 	t.Helper()
-	client := siyuan.NewClient(server.URL, "test-token")
+	client := siyuan.NewClient(server.Server.URL, "test-token")
 	scanner, err := git.NewGitScanner(repo)
 	if err != nil {
 		t.Fatalf("NewGitScanner: %v", err)
@@ -227,8 +46,8 @@ func buildEngine(t *testing.T, repo string, server *httptest.Server) *sync.SyncE
 
 // buildClient returns a siyuan.Client pointed at the mock server. Used for
 // retire entries where Apply talks to the client directly.
-func buildClient(server *httptest.Server) *siyuan.Client {
-	return siyuan.NewClient(server.URL, "test-token")
+func buildClient(server *testutil.MockSiYuan) *siyuan.Client {
+	return siyuan.NewClient(server.Server.URL, "test-token")
 }
 
 // ---------------------------------------------------------------------------
@@ -238,18 +57,18 @@ func buildClient(server *httptest.Server) *siyuan.Client {
 // 1. Mixed plan covering all three op kinds; each entry independently
 // succeeds; per-entry isolation does not bleed state across entries.
 func TestApply_MixedPlan_PerEntryIsolation(t *testing.T) {
-	repo := setupGitRepo(t)
+	repo := testutil.SetupGitRepo(t, "migrate-apply-test")
 
 	// Seed three local files committed to the repo.
-	writeGitFile(t, repo, "wiki/misc/a.md", "# A\n\nOriginal body of A.\n")
-	writeGitFile(t, repo, "wiki/misc/b.md", "# B\n\nOriginal body of B.\n")
-	writeGitFile(t, repo, "wiki/misc/c.md", "# C\n\nOriginal body of C.\n")
-	gitCmd(t, repo, "add", ".")
-	gitCmd(t, repo, "commit", "-m", "seed")
+	testutil.WriteFile(t, repo, "wiki/misc/a.md", "# A\n\nOriginal body of A.\n")
+	testutil.WriteFile(t, repo, "wiki/misc/b.md", "# B\n\nOriginal body of B.\n")
+	testutil.WriteFile(t, repo, "wiki/misc/c.md", "# C\n\nOriginal body of C.\n")
+	testutil.GitCmd(t, repo, "add", ".")
+	testutil.GitCmd(t, repo, "commit", "-m", "seed")
 
-	mock, server := newMockSiYuan(t)
-	engine := buildEngine(t, repo, server)
-	client := buildClient(server)
+	mock := testutil.NewMockSiYuan(t)
+	engine := buildEngine(t, repo, mock)
+	client := buildClient(mock)
 
 	plan := MigrationPlan{
 		Version:     PlanV1,
@@ -307,7 +126,7 @@ func TestApply_MixedPlan_PerEntryIsolation(t *testing.T) {
 
 	// b.md uploaded body must contain "Rewritten body" — not the original.
 	var foundB bool
-	for _, d := range mock.createdDocs {
+	for _, d := range mock.CreatedDocs {
 		if strings.Contains(d.Markdown, "Rewritten body") {
 			foundB = true
 			if strings.Contains(d.Markdown, "Original body of B") {
@@ -316,18 +135,18 @@ func TestApply_MixedPlan_PerEntryIsolation(t *testing.T) {
 		}
 	}
 	if !foundB {
-		t.Errorf("entry 1 (b.md): no created doc with rewritten body; got %d creations", len(mock.createdDocs))
+		t.Errorf("entry 1 (b.md): no created doc with rewritten body; got %d creations", len(mock.CreatedDocs))
 	}
 
 	// Retire entry: removeDocByID must have been called for the doc ID.
 	var sawRetire bool
-	for _, id := range mock.removedDocs {
+	for _, id := range mock.RemovedDocIDs {
 		if id == "doc-to-retire" {
 			sawRetire = true
 		}
 	}
 	if !sawRetire {
-		t.Errorf("retire: expected removeDocByID(doc-to-retire); got %v", mock.removedDocs)
+		t.Errorf("retire: expected removeDocByID(doc-to-retire); got %v", mock.RemovedDocIDs)
 	}
 
 	// Dropped local file must be gone from disk.
@@ -338,14 +157,14 @@ func TestApply_MixedPlan_PerEntryIsolation(t *testing.T) {
 
 // 2. One entry fails (read error from a missing file); the others still run.
 func TestApply_OneEntryFails_OthersStillRun(t *testing.T) {
-	repo := setupGitRepo(t)
-	writeGitFile(t, repo, "wiki/misc/a.md", "# A\n\nbody\n")
-	gitCmd(t, repo, "add", ".")
-	gitCmd(t, repo, "commit", "-m", "seed")
+	repo := testutil.SetupGitRepo(t, "migrate-apply-test")
+	testutil.WriteFile(t, repo, "wiki/misc/a.md", "# A\n\nbody\n")
+	testutil.GitCmd(t, repo, "add", ".")
+	testutil.GitCmd(t, repo, "commit", "-m", "seed")
 
-	_, server := newMockSiYuan(t)
-	engine := buildEngine(t, repo, server)
-	client := buildClient(server)
+	mock := testutil.NewMockSiYuan(t)
+	engine := buildEngine(t, repo, mock)
+	client := buildClient(mock)
 
 	plan := MigrationPlan{
 		Version: PlanV1,
@@ -395,14 +214,14 @@ func TestApply_OneEntryFails_OthersStillRun(t *testing.T) {
 // 3. Pre-flight plan rejection: Version: 0 → Apply returns (nil, error)
 // BEFORE any side effects fire.
 func TestApply_InvalidPlan_PreflightRejects(t *testing.T) {
-	repo := setupGitRepo(t)
-	writeGitFile(t, repo, "wiki/misc/a.md", "# A\n")
-	gitCmd(t, repo, "add", ".")
-	gitCmd(t, repo, "commit", "-m", "seed")
+	repo := testutil.SetupGitRepo(t, "migrate-apply-test")
+	testutil.WriteFile(t, repo, "wiki/misc/a.md", "# A\n")
+	testutil.GitCmd(t, repo, "add", ".")
+	testutil.GitCmd(t, repo, "commit", "-m", "seed")
 
-	mock, server := newMockSiYuan(t)
-	engine := buildEngine(t, repo, server)
-	client := buildClient(server)
+	mock := testutil.NewMockSiYuan(t)
+	engine := buildEngine(t, repo, mock)
+	client := buildClient(mock)
 
 	plan := MigrationPlan{
 		Version: 0, // invalid
@@ -429,7 +248,7 @@ func TestApply_InvalidPlan_PreflightRejects(t *testing.T) {
 	}
 
 	// No SiYuan API call may have occurred.
-	if total := len(mock.createdDocs) + len(mock.removedDocs) + len(mock.updatedDocs); total > 0 {
+	if total := len(mock.CreatedDocs) + len(mock.RemovedDocIDs) + len(mock.UpdatedDocs); total > 0 {
 		t.Errorf("Apply: expected zero API calls on pre-flight reject; got %d", total)
 	}
 	// No new commit should exist beyond the seed.
@@ -447,14 +266,14 @@ func TestApply_InvalidPlan_PreflightRejects(t *testing.T) {
 // exercises read-failure propagation under OpKeep, which is the closest
 // natural error from the same shared error-isolation code path).
 func TestApply_UnreadableSource_ProducesEntryError(t *testing.T) {
-	repo := setupGitRepo(t)
-	writeGitFile(t, repo, "wiki/misc/a.md", "# A\n")
-	gitCmd(t, repo, "add", ".")
-	gitCmd(t, repo, "commit", "-m", "seed")
+	repo := testutil.SetupGitRepo(t, "migrate-apply-test")
+	testutil.WriteFile(t, repo, "wiki/misc/a.md", "# A\n")
+	testutil.GitCmd(t, repo, "add", ".")
+	testutil.GitCmd(t, repo, "commit", "-m", "seed")
 
-	_, server := newMockSiYuan(t)
-	engine := buildEngine(t, repo, server)
-	client := buildClient(server)
+	mock := testutil.NewMockSiYuan(t)
+	engine := buildEngine(t, repo, mock)
+	client := buildClient(mock)
 
 	plan := MigrationPlan{
 		Version: PlanV1,
@@ -534,15 +353,15 @@ func TestApply_UnreadableSource_ProducesEntryError(t *testing.T) {
 // Req coverage: 6.3 (apply order), 6.4 (keep), 6.5 (drop_local), 10.2/10.3
 // (retire_siyuan). Design `migrate/apply` -> per-entry executor contract.
 func TestApply_MixedPlan_OutcomesReportShape(t *testing.T) {
-	repo := setupGitRepo(t)
-	writeGitFile(t, repo, "wiki/misc/a.md", "# A\nbody\n")
-	writeGitFile(t, repo, "wiki/misc/c.md", "# C\nbody\n")
-	gitCmd(t, repo, "add", ".")
-	gitCmd(t, repo, "commit", "-m", "seed")
+	repo := testutil.SetupGitRepo(t, "migrate-apply-test")
+	testutil.WriteFile(t, repo, "wiki/misc/a.md", "# A\nbody\n")
+	testutil.WriteFile(t, repo, "wiki/misc/c.md", "# C\nbody\n")
+	testutil.GitCmd(t, repo, "add", ".")
+	testutil.GitCmd(t, repo, "commit", "-m", "seed")
 
-	_, server := newMockSiYuan(t)
-	engine := buildEngine(t, repo, server)
-	client := buildClient(server)
+	mock := testutil.NewMockSiYuan(t)
+	engine := buildEngine(t, repo, mock)
+	client := buildClient(mock)
 
 	plan := MigrationPlan{
 		Version: PlanV1,
@@ -644,20 +463,20 @@ func TestApply_MixedPlan_OutcomesReportShape(t *testing.T) {
 // collision surfaces as a structured error, not a silent overwrite).
 // Design `migrate/apply` -> "atomicity" note.
 func TestApply_KeepFailureIsolatedByGitMvError(t *testing.T) {
-	repo := setupGitRepo(t)
+	repo := testutil.SetupGitRepo(t, "migrate-apply-test")
 
 	// Pre-seed the canonical devops target with an unrelated, already-routed
 	// file `bad.md`. A later OpKeep on `wiki/misc/bad.md` will route to the
 	// same target -> `git mv` refuses (destination already exists).
-	writeGitFile(t, repo, "Sysadmin & DevOps/bad.md", "# Pre-existing bad.md\n")
-	writeGitFile(t, repo, "wiki/misc/bad.md", "# Source bad.md\nbody\n")
-	writeGitFile(t, repo, "wiki/misc/good.md", "# Good\nbody\n")
-	gitCmd(t, repo, "add", ".")
-	gitCmd(t, repo, "commit", "-m", "seed")
+	testutil.WriteFile(t, repo, "Sysadmin & DevOps/bad.md", "# Pre-existing bad.md\n")
+	testutil.WriteFile(t, repo, "wiki/misc/bad.md", "# Source bad.md\nbody\n")
+	testutil.WriteFile(t, repo, "wiki/misc/good.md", "# Good\nbody\n")
+	testutil.GitCmd(t, repo, "add", ".")
+	testutil.GitCmd(t, repo, "commit", "-m", "seed")
 
-	mock, server := newMockSiYuan(t)
-	engine := buildEngine(t, repo, server)
-	client := buildClient(server)
+	mock := testutil.NewMockSiYuan(t)
+	engine := buildEngine(t, repo, mock)
+	client := buildClient(mock)
 
 	plan := MigrationPlan{
 		Version: PlanV1,
@@ -716,7 +535,7 @@ func TestApply_KeepFailureIsolatedByGitMvError(t *testing.T) {
 	// per-intent index docs (`/_<intent>_index.md`) once per canonical
 	// notebook — those are filtered out here since they are engine-owned
 	// derived artifacts, not user files.
-	userDocs := filterUserDocs(mock.createdDocs)
+	userDocs := testutil.FilterUserDocs(mock.CreatedDocs)
 	if got := len(userDocs); got != 1 {
 		t.Fatalf("user-doc createdDocs: want 1, got %d (%+v)", got, userDocs)
 	}
@@ -748,7 +567,7 @@ func TestApply_KeepFailureIsolatedByGitMvError(t *testing.T) {
 // Req coverage: 8.3 (preservation invariant -> conflict surfaced for human
 // review). Design `migrate/apply` -> "atomicity" note.
 func TestApply_UnsafeRewrite_ProducesStructuredError(t *testing.T) {
-	repo := setupGitRepo(t)
+	repo := testutil.SetupGitRepo(t, "migrate-apply-test")
 
 	// Frontmatter parse failure: a hard tab in the indentation of a mapping
 	// entry trips yaml.v3's stricter tab-vs-space rule. AddOntology returns
@@ -756,13 +575,13 @@ func TestApply_UnsafeRewrite_ProducesStructuredError(t *testing.T) {
 	// `add ontology: ontology: parse frontmatter: ...`. The wrapping prefix
 	// is the load-bearing assertion; the inner cause is incidental.
 	bad := "---\ntitle: Foo\n\tbad: x\n---\nbody\n"
-	writeGitFile(t, repo, "wiki/misc/bad-yaml.md", bad)
-	gitCmd(t, repo, "add", ".")
-	gitCmd(t, repo, "commit", "-m", "seed")
+	testutil.WriteFile(t, repo, "wiki/misc/bad-yaml.md", bad)
+	testutil.GitCmd(t, repo, "add", ".")
+	testutil.GitCmd(t, repo, "commit", "-m", "seed")
 
-	_, server := newMockSiYuan(t)
-	engine := buildEngine(t, repo, server)
-	client := buildClient(server)
+	mock := testutil.NewMockSiYuan(t)
+	engine := buildEngine(t, repo, mock)
+	client := buildClient(mock)
 
 	plan := MigrationPlan{
 		Version: PlanV1,
@@ -834,17 +653,17 @@ func TestApply_UnsafeRewrite_ProducesStructuredError(t *testing.T) {
 // Req coverage: 6.4 (keep), 10.4 (hpath collision surfaces; never silent
 // overwrite).
 func TestApply_HpathCollision_V1_IdempotencyProof(t *testing.T) {
-	repo := setupGitRepo(t)
+	repo := testutil.SetupGitRepo(t, "migrate-apply-test")
 
 	// Same basename + same domain, different source folders.
-	writeGitFile(t, repo, "wiki/inboxA/colliding.md", "# A version\nbody A\n")
-	writeGitFile(t, repo, "wiki/inboxB/colliding.md", "# B version\nbody B\n")
-	gitCmd(t, repo, "add", ".")
-	gitCmd(t, repo, "commit", "-m", "seed")
+	testutil.WriteFile(t, repo, "wiki/inboxA/colliding.md", "# A version\nbody A\n")
+	testutil.WriteFile(t, repo, "wiki/inboxB/colliding.md", "# B version\nbody B\n")
+	testutil.GitCmd(t, repo, "add", ".")
+	testutil.GitCmd(t, repo, "commit", "-m", "seed")
 
-	mock, server := newMockSiYuan(t)
-	engine := buildEngine(t, repo, server)
-	client := buildClient(server)
+	mock := testutil.NewMockSiYuan(t)
+	engine := buildEngine(t, repo, mock)
+	client := buildClient(mock)
 
 	plan := MigrationPlan{
 		Version: PlanV1,
@@ -902,7 +721,7 @@ func TestApply_HpathCollision_V1_IdempotencyProof(t *testing.T) {
 	// probe, the second write never reaches SiYuan. Engine-owned intent
 	// index docs (`/_<intent>_index.md`) are filtered out since they are
 	// derived artifacts upserted once per canonical notebook.
-	userDocs := filterUserDocs(mock.createdDocs)
+	userDocs := testutil.FilterUserDocs(mock.CreatedDocs)
 	if got := len(userDocs); got != 1 {
 		t.Fatalf("user-doc createdDocs: want 1 (V1 data-safety), got %d (%+v)",
 			got, userDocs)
@@ -921,15 +740,15 @@ func TestApply_HpathCollision_V1_IdempotencyProof(t *testing.T) {
 
 // 5. RewrittenBody preserves frontmatter while replacing the body.
 func TestApply_RewrittenBody_PreservesFrontmatter(t *testing.T) {
-	repo := setupGitRepo(t)
+	repo := testutil.SetupGitRepo(t, "migrate-apply-test")
 	original := "---\ntitle: Original\ndate: 2024-01-01\ntags: [foo]\n---\nOriginal body.\n"
-	writeGitFile(t, repo, "wiki/misc/a.md", original)
-	gitCmd(t, repo, "add", ".")
-	gitCmd(t, repo, "commit", "-m", "seed")
+	testutil.WriteFile(t, repo, "wiki/misc/a.md", original)
+	testutil.GitCmd(t, repo, "add", ".")
+	testutil.GitCmd(t, repo, "commit", "-m", "seed")
 
-	_, server := newMockSiYuan(t)
-	engine := buildEngine(t, repo, server)
-	client := buildClient(server)
+	mock := testutil.NewMockSiYuan(t)
+	engine := buildEngine(t, repo, mock)
+	client := buildClient(mock)
 
 	plan := MigrationPlan{
 		Version: PlanV1,

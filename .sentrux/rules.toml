@@ -1,0 +1,95 @@
+# Sentrux architectural rules for siyuan-knowledge-sync.
+# Validated by `sentrux check` and the `check_rules` MCP tool.
+
+[constraints]
+max_cycles   = 0      # No circular imports.
+max_cc       = 30     # Max cyclomatic complexity per function.
+max_fn_lines = 200    # Max function length in lines.
+no_god_files = true   # No single file should dominate its package.
+
+# ---------------------------------------------------------------------------
+# Layers — LOWER order is the consuming layer (closer to CLI top),
+# HIGHER order is the leaf. Imports must flow from low to high.
+# ---------------------------------------------------------------------------
+
+[[layers]]
+name  = "app"
+paths = ["cmd/siyuan-knowledge-sync/*"]
+order = 0
+
+[[layers]]
+name  = "sync-engine"
+paths = ["internal/sync/*"]
+order = 1
+
+[[layers]]
+name  = "domain"
+paths = [
+  "internal/compliance/*",
+  "internal/ontology/*",
+  "internal/tags/*",
+  "internal/migrate/*",
+  "internal/toc/*",
+  "internal/mcp/*",
+]
+order = 2
+
+[[layers]]
+name  = "infrastructure"
+paths = [
+  "internal/siyuan/*",
+  "internal/git/*",
+  "internal/state/*",
+  "internal/config/*",
+]
+order = 3
+
+[[layers]]
+name  = "foundation"
+paths = ["internal/types/*", "internal/testutil/*"]
+order = 4
+
+# ---------------------------------------------------------------------------
+# Boundaries — forbid cross-layer shortcuts the layer order alone
+# would not catch.
+# ---------------------------------------------------------------------------
+
+[[boundaries]]
+from   = "internal/infrastructure/*"
+to     = "internal/sync/*"
+reason = "Infrastructure (siyuan client, git scanner, state) must not import the sync engine."
+
+[[boundaries]]
+from   = "internal/infrastructure/*"
+to     = "internal/domain/*"
+reason = "Infrastructure must not depend on domain logic."
+
+[[boundaries]]
+from   = "internal/types/*"
+to     = "internal/*"
+reason = "Shared types must be a leaf with no internal dependencies."
+
+[[boundaries]]
+from   = "internal/compliance/*"
+to     = "internal/sync/*"
+reason = "Compliance checks must not import the sync engine."
+
+[[boundaries]]
+from   = "internal/ontology/*"
+to     = "internal/sync/*"
+reason = "Ontology routing must not import the sync engine."
+
+[[boundaries]]
+from   = "internal/tags/*"
+to     = "internal/sync/*"
+reason = "Tag extraction must not import the sync engine."
+
+[[boundaries]]
+from   = "internal/git/*"
+to     = "internal/siyuan/*"
+reason = "Git scanner must not depend on SiYuan client."
+
+[[boundaries]]
+from   = "internal/state/*"
+to     = "internal/siyuan/*"
+reason = "State tracker must not depend on SiYuan client."

@@ -2,57 +2,23 @@ package git
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"siyuan-knowledge-sync/internal/testutil"
 )
 
-func gitCmd(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
-		"GIT_AUTHOR_NAME=test",
-		"GIT_AUTHOR_EMAIL=test@test.com",
-		"GIT_COMMITTER_NAME=test",
-		"GIT_COMMITTER_EMAIL=test@test.com",
-	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v failed: %s\n%s", args, err, out)
-	}
-}
-
-func writeFile(t *testing.T, path, content string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func setupGitRepo(t *testing.T) (string, func()) {
-	t.Helper()
-	dir, err := os.MkdirTemp("", "gitscanner-test-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	gitCmd(t, dir, "init")
-	return dir, func() { os.RemoveAll(dir) }
-}
+// Helpers delegated to internal/testutil.
 
 func TestListTrackedMdFiles_OnlyCommittedMd(t *testing.T) {
-	dir, cleanup := setupGitRepo(t)
-	defer cleanup()
+	dir := testutil.SetupGitRepo(t, "gitscanner-test")
 
-	writeFile(t, filepath.Join(dir, "a.md"), "# A")
-	writeFile(t, filepath.Join(dir, "b.md"), "# B")
-	writeFile(t, filepath.Join(dir, "c.txt"), "text")
-	gitCmd(t, dir, "add", "a.md", "b.md", "c.txt")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "a.md", "# A")
+	testutil.WriteFile(t, dir, "b.md", "# B")
+	testutil.WriteFile(t, dir, "c.txt", "text")
+	testutil.GitCmd(t, dir, "add", "a.md", "b.md", "c.txt")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	scanner, err := NewGitScanner(dir)
 	if err != nil {
@@ -84,14 +50,13 @@ func TestListTrackedMdFiles_OnlyCommittedMd(t *testing.T) {
 }
 
 func TestListTrackedMdFiles_ExcludesUntracked(t *testing.T) {
-	dir, cleanup := setupGitRepo(t)
-	defer cleanup()
+	dir := testutil.SetupGitRepo(t, "gitscanner-test")
 
-	writeFile(t, filepath.Join(dir, "tracked.md"), "# Tracked")
-	gitCmd(t, dir, "add", "tracked.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "tracked.md", "# Tracked")
+	testutil.GitCmd(t, dir, "add", "tracked.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
-	writeFile(t, filepath.Join(dir, "untracked.md"), "# Untracked")
+	testutil.WriteFile(t, dir, "untracked.md", "# Untracked")
 
 	scanner, err := NewGitScanner(dir)
 	if err != nil {
@@ -112,14 +77,13 @@ func TestListTrackedMdFiles_ExcludesUntracked(t *testing.T) {
 }
 
 func TestListTrackedMdFiles_ExcludesNonMd(t *testing.T) {
-	dir, cleanup := setupGitRepo(t)
-	defer cleanup()
+	dir := testutil.SetupGitRepo(t, "gitscanner-test")
 
-	writeFile(t, filepath.Join(dir, "readme.md"), "# Readme")
-	writeFile(t, filepath.Join(dir, "main.go"), "package main")
-	writeFile(t, filepath.Join(dir, "config.yaml"), "key: val")
-	gitCmd(t, dir, "add", "readme.md", "main.go", "config.yaml")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "readme.md", "# Readme")
+	testutil.WriteFile(t, dir, "main.go", "package main")
+	testutil.WriteFile(t, dir, "config.yaml", "key: val")
+	testutil.GitCmd(t, dir, "add", "readme.md", "main.go", "config.yaml")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	scanner, err := NewGitScanner(dir)
 	if err != nil {
@@ -140,13 +104,12 @@ func TestListTrackedMdFiles_ExcludesNonMd(t *testing.T) {
 }
 
 func TestListTrackedMdFiles_IncludesSubdirectories(t *testing.T) {
-	dir, cleanup := setupGitRepo(t)
-	defer cleanup()
+	dir := testutil.SetupGitRepo(t, "gitscanner-test")
 
-	writeFile(t, filepath.Join(dir, "notes/foo.md"), "# Foo")
-	writeFile(t, filepath.Join(dir, "notes/bar.md"), "# Bar")
-	gitCmd(t, dir, "add", "notes/foo.md", "notes/bar.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "notes/foo.md", "# Foo")
+	testutil.WriteFile(t, dir, "notes/bar.md", "# Bar")
+	testutil.GitCmd(t, dir, "add", "notes/foo.md", "notes/bar.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	scanner, err := NewGitScanner(dir)
 	if err != nil {
@@ -175,12 +138,11 @@ func TestListTrackedMdFiles_IncludesSubdirectories(t *testing.T) {
 }
 
 func TestListTrackedMdFiles_ModTimePresent(t *testing.T) {
-	dir, cleanup := setupGitRepo(t)
-	defer cleanup()
+	dir := testutil.SetupGitRepo(t, "gitscanner-test")
 
-	writeFile(t, filepath.Join(dir, "doc.md"), "# Doc")
-	gitCmd(t, dir, "add", "doc.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "doc.md", "# Doc")
+	testutil.GitCmd(t, dir, "add", "doc.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	scanner, err := NewGitScanner(dir)
 	if err != nil {
@@ -209,12 +171,11 @@ func TestListTrackedMdFiles_ModTimePresent(t *testing.T) {
 }
 
 func TestListTrackedMdFiles_NewlyAddedFile(t *testing.T) {
-	dir, cleanup := setupGitRepo(t)
-	defer cleanup()
+	dir := testutil.SetupGitRepo(t, "gitscanner-test")
 
-	writeFile(t, filepath.Join(dir, "first.md"), "# First")
-	gitCmd(t, dir, "add", "first.md")
-	gitCmd(t, dir, "commit", "-m", "first commit")
+	testutil.WriteFile(t, dir, "first.md", "# First")
+	testutil.GitCmd(t, dir, "add", "first.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "first commit")
 
 	scanner, err := NewGitScanner(dir)
 	if err != nil {
@@ -230,9 +191,9 @@ func TestListTrackedMdFiles_NewlyAddedFile(t *testing.T) {
 		t.Fatalf("first run: expected [first.md], got %v", files1)
 	}
 
-	writeFile(t, filepath.Join(dir, "second.md"), "# Second")
-	gitCmd(t, dir, "add", "second.md")
-	gitCmd(t, dir, "commit", "-m", "second commit")
+	testutil.WriteFile(t, dir, "second.md", "# Second")
+	testutil.GitCmd(t, dir, "add", "second.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "second commit")
 
 	scanner2, err := NewGitScanner(dir)
 	if err != nil {
@@ -261,13 +222,12 @@ func TestListTrackedMdFiles_NewlyAddedFile(t *testing.T) {
 }
 
 func TestIsTracked_MdFile(t *testing.T) {
-	dir, cleanup := setupGitRepo(t)
-	defer cleanup()
+	dir := testutil.SetupGitRepo(t, "gitscanner-test")
 
-	writeFile(t, filepath.Join(dir, "tracked.md"), "# Tracked")
-	writeFile(t, filepath.Join(dir, "untracked.md"), "# Untracked")
-	gitCmd(t, dir, "add", "tracked.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "tracked.md", "# Tracked")
+	testutil.WriteFile(t, dir, "untracked.md", "# Untracked")
+	testutil.GitCmd(t, dir, "add", "tracked.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	scanner, err := NewGitScanner(dir)
 	if err != nil {
@@ -284,13 +244,12 @@ func TestIsTracked_MdFile(t *testing.T) {
 }
 
 func TestIsTracked_UntrackedFile(t *testing.T) {
-	dir, cleanup := setupGitRepo(t)
-	defer cleanup()
+	dir := testutil.SetupGitRepo(t, "gitscanner-test")
 
-	writeFile(t, filepath.Join(dir, "tracked.md"), "# Tracked")
-	writeFile(t, filepath.Join(dir, "untracked.md"), "# Untracked")
-	gitCmd(t, dir, "add", "tracked.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "tracked.md", "# Tracked")
+	testutil.WriteFile(t, dir, "untracked.md", "# Untracked")
+	testutil.GitCmd(t, dir, "add", "tracked.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	scanner, err := NewGitScanner(dir)
 	if err != nil {
@@ -307,13 +266,12 @@ func TestIsTracked_UntrackedFile(t *testing.T) {
 }
 
 func TestIsTracked_NonMdFile(t *testing.T) {
-	dir, cleanup := setupGitRepo(t)
-	defer cleanup()
+	dir := testutil.SetupGitRepo(t, "gitscanner-test")
 
-	writeFile(t, filepath.Join(dir, "readme.md"), "# Readme")
-	writeFile(t, filepath.Join(dir, "main.go"), "package main")
-	gitCmd(t, dir, "add", "readme.md", "main.go")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "readme.md", "# Readme")
+	testutil.WriteFile(t, dir, "main.go", "package main")
+	testutil.GitCmd(t, dir, "add", "readme.md", "main.go")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	scanner, err := NewGitScanner(dir)
 	if err != nil {
@@ -330,12 +288,11 @@ func TestIsTracked_NonMdFile(t *testing.T) {
 }
 
 func TestIsTracked_NonExistentFile(t *testing.T) {
-	dir, cleanup := setupGitRepo(t)
-	defer cleanup()
+	dir := testutil.SetupGitRepo(t, "gitscanner-test")
 
-	writeFile(t, filepath.Join(dir, "readme.md"), "# Readme")
-	gitCmd(t, dir, "add", "readme.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "readme.md", "# Readme")
+	testutil.GitCmd(t, dir, "add", "readme.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	scanner, err := NewGitScanner(dir)
 	if err != nil {
@@ -365,8 +322,7 @@ func TestNewGitScanner_NonGitDir(t *testing.T) {
 }
 
 func TestListTrackedMdFiles_EmptyRepo(t *testing.T) {
-	dir, cleanup := setupGitRepo(t)
-	defer cleanup()
+	dir := testutil.SetupGitRepo(t, "gitscanner-test")
 
 	scanner, err := NewGitScanner(dir)
 	if err != nil {
@@ -383,12 +339,11 @@ func TestListTrackedMdFiles_EmptyRepo(t *testing.T) {
 }
 
 func TestListTrackedMdFiles_ModTimeReflectsFileSystem(t *testing.T) {
-	dir, cleanup := setupGitRepo(t)
-	defer cleanup()
+	dir := testutil.SetupGitRepo(t, "gitscanner-test")
 
-	writeFile(t, filepath.Join(dir, "note.md"), "# Note")
-	gitCmd(t, dir, "add", "note.md")
-	gitCmd(t, dir, "commit", "-m", "initial")
+	testutil.WriteFile(t, dir, "note.md", "# Note")
+	testutil.GitCmd(t, dir, "add", "note.md")
+	testutil.GitCmd(t, dir, "commit", "-m", "initial")
 
 	before := time.Now().Add(-1 * time.Second)
 	os.Chtimes(filepath.Join(dir, "note.md"), before, before)

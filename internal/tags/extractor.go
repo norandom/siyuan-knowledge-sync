@@ -252,16 +252,6 @@ func scalarValue(node yaml.Node) string {
 	return v
 }
 
-// parseFrontmatterTags is retained for backward compatibility; it delegates to
-// the shared single-pass parser and exposes only the tag list.
-func parseFrontmatterTags(fmBytes []byte) ([]string, error) {
-	parsed, err := parseFrontmatter(fmBytes)
-	if err != nil {
-		return nil, err
-	}
-	return parsed.tags, nil
-}
-
 func tagsFromNode(node yaml.Node) []string {
 	if node.IsZero() {
 		return nil
