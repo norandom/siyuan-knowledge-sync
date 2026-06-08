@@ -6,6 +6,40 @@ Sync a folder of markdown notes to [SiYuan](https://b3log.org/siyuan/). Every no
 
 ### 1. Install
 
+Download the latest binary for your platform from GitHub releases:
+
+```bash
+# Linux (amd64)
+curl -L -o siyuan-knowledge-sync https://github.com/norandom/siyuan-knowledge-sync/releases/latest/download/siyuan-knowledge-sync_latest_linux_amd64
+chmod +x siyuan-knowledge-sync
+sudo mv siyuan-knowledge-sync /usr/local/bin/
+
+# Linux (arm64)
+curl -L -o siyuan-knowledge-sync https://github.com/norandom/siyuan-knowledge-sync/releases/latest/download/siyuan-knowledge-sync_latest_linux_arm64
+chmod +x siyuan-knowledge-sync
+sudo mv siyuan-knowledge-sync /usr/local/bin/
+
+# Linux (armv7, e.g. Raspberry Pi)
+curl -L -o siyuan-knowledge-sync https://github.com/norandom/siyuan-knowledge-sync/releases/latest/download/siyuan-knowledge-sync_latest_linux_arm
+chmod +x siyuan-knowledge-sync
+sudo mv siyuan-knowledge-sync /usr/local/bin/
+
+# macOS (Apple silicon)
+curl -L -o siyuan-knowledge-sync https://github.com/norandom/siyuan-knowledge-sync/releases/latest/download/siyuan-knowledge-sync_latest_darwin_arm64
+chmod +x siyuan-knowledge-sync
+sudo mv siyuan-knowledge-sync /usr/local/bin/
+
+# macOS (Intel)
+curl -L -o siyuan-knowledge-sync https://github.com/norandom/siyuan-knowledge-sync/releases/latest/download/siyuan-knowledge-sync_latest_darwin_amd64
+chmod +x siyuan-knowledge-sync
+sudo mv siyuan-knowledge-sync /usr/local/bin/
+
+# Windows (PowerShell)
+Invoke-WebRequest -Uri "https://github.com/norandom/siyuan-knowledge-sync/releases/latest/download/siyuan-knowledge-sync_latest_windows_amd64.exe" -OutFile "siyuan-knowledge-sync.exe"
+```
+
+Or with Go:
+
 ```bash
 go install github.com/norandom/siyuan-knowledge-sync/cmd/siyuan-knowledge-sync@latest
 ```
