@@ -23,6 +23,11 @@ autofix: true
 # Optional: override the default ontology.
 # Omit this section entirely to use built-in defaults.
 # When provided, it fully replaces the defaults.
+#
+# The values below are the built-in defaults shown as examples.
+# Replace them with your own domain/intent structure.
+# Domains need an id (used in frontmatter) and a folder (SiYuan destination).
+# Intents need an id. The id must match [a-z][a-z0-9-]*.
 ontology:
   domains:
     - id: devops
